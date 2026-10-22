@@ -1,0 +1,7 @@
+{
+  "name": "Nampa, Idaho",
+  "origin": { "lat": 43.579, "lon": -116.563, "height": 0 },
+  "buildingBbox": { "west": -116.7, "south": 43.5, "east": -116.45, "north": 43.66 },
+  "buildingTileSize": 1000,
+  "terrain": { "rootZoom": 9, "rootRadiusTiles": 1, "maxElevationZoom": 15, "maxImageryZoom": 19 }
+}

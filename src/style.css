@@ -1,0 +1,175 @@
+:root {
+  --panel-bg: rgba(18, 22, 28, 0.78);
+  --panel-fg: #e8ecf1;
+  --muted: #a9b3bf;
+  --accent: #6cb4ff;
+  --border: rgba(255, 255, 255, 0.14);
+  color-scheme: dark;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  height: 100%;
+  overflow: hidden;
+  background: #0b0f14;
+  color: var(--panel-fg);
+  font: 13px/1.35 system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+}
+
+canvas {
+  display: block;
+  touch-action: none;
+}
+
+.ui {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+}
+
+.ui > * {
+  pointer-events: auto;
+}
+
+.panel {
+  position: absolute;
+  top: 12px;
+  left: 12px;
+  width: 248px;
+  max-width: calc(100vw - 24px);
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--panel-bg);
+  backdrop-filter: blur(6px);
+}
+
+.title {
+  font-weight: 650;
+  font-size: 15px;
+  margin-bottom: 8px;
+}
+
+.row {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  margin-top: 6px;
+}
+
+.row > select,
+.row > input[type='range'] {
+  flex: 1;
+  min-width: 0;
+}
+
+.seg button {
+  flex: 1;
+}
+
+button,
+select {
+  font: inherit;
+  color: var(--panel-fg);
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 5px 9px;
+  cursor: pointer;
+}
+
+button.on {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #08131f;
+}
+
+button.small {
+  padding: 4px 8px;
+  flex: none;
+}
+
+.time-label {
+  color: var(--muted);
+}
+
+input[type='range'] {
+  accent-color: var(--accent);
+}
+
+.help {
+  position: absolute;
+  left: 12px;
+  bottom: 28px;
+  padding: 5px 9px;
+  border-radius: 6px;
+  background: var(--panel-bg);
+  color: var(--muted);
+  max-width: calc(100vw - 24px);
+}
+
+.credits {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  padding: 3px 10px;
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.82);
+  background: rgba(0, 0, 0, 0.45);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.debug {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  margin: 0;
+  max-width: min(520px, calc(100vw - 24px));
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: var(--panel-bg);
+  font: 11px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  white-space: pre-wrap;
+}
+
+.touchpad {
+  position: absolute;
+  right: 16px;
+  bottom: 48px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.touchpad button {
+  width: 58px;
+  height: 58px;
+  font-size: 22px;
+  border-radius: 50%;
+  background: var(--panel-bg);
+}
+
+[hidden] {
+  display: none !important;
+}
+
+@media (max-width: 600px) {
+  .panel {
+    width: auto;
+    right: 12px;
+  }
+
+  .debug {
+    top: auto;
+    bottom: 120px;
+    left: 12px;
+  }
+}

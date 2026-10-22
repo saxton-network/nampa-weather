@@ -18,7 +18,7 @@ overlay. That plan is parked; the camera overlay replaced it.
 | Roads on the ground | Overture transportation (OpenStreetMap) | Every road, driveway, parking aisle, alley and path is painted into the ground at a width set by its type, with sidewalks, yellow centre lines and white edge and lane lines |
 | Trees | USGS 3DEP lidar (2018 Southern Idaho survey, public domain) | Each tree is a canopy peak found in the lidar point cloud, with its measured height and crown width; tall narrow crowns become conifers. Low-poly crowns on separate trunks in `public/data/trees/`. Drawn within about 1 km below 600 m altitude |
 | Terrain | [AWS Terrain Tiles](https://registry.opendata.aws/terrain-tiles/) (terrarium encoding, USGS 3DEP) | Snapshot saved in `public/tiles/elevation/`: about 3.5 m (z15) over Nampa, coarser beyond. Streamed as a quadtree with Earth curvature built in. Land with no cameras and few buildings is drawn a level or two coarser (except right around the viewer), and terrain past 40 km (25 km with `quality=low`) stays coarse, where haze hides detail anyway |
-| Buildings | [Overture Maps](https://overturemaps.org/) buildings, release 2026-10-21.0 | 77,803 buildings, pre-cut into 1 km tiles in `public/data/buildings/`, meshed in a Web Worker. Houses get gable or hip roofs |
+| Buildings | [Overture Maps](https://overturemaps.org/) buildings, release 2026-10-21.0, refined near cameras from USGS lidar and NAIP photos | 77,803 buildings, pre-cut into 1 km tiles in `public/data/buildings/`, meshed in a Web Worker. Within a mile of a plate-reader camera, every building gets its roof colour from the aerial photo, and where lidar exists (southwest Nampa for now, 11,080 buildings) its footprint is lined up with the lidar, its eave and ridge heights are measured, and its roof is fitted: flat, gabled or hipped, with L- and T-shaped houses split into cross-gabled wings. Elsewhere houses get a guessed gable or hip roof |
 | Street names | Overture Maps transportation (from OpenStreetMap) | 12,070 named road segments in `public/data/roads/`. Labels follow the roads in drone mode, stand at sign height in walk mode, and are hidden when a building blocks the view |
 | ALPR cameras | OpenStreetMap nodes tagged `surveillance:type=ALPR`, mapped by the [DeFlock](https://deflock.org) community | 253 cameras across the Treasure Valley in `public/data/cameras.json`, refreshed on every deploy and daily. Each camera gets a pole, a head per direction it faces and a translucent ground wedge showing what it points at, coloured by brand. Clickable pins cluster when zoomed out |
 | Facades | Generated from each building's Overture type and height | Walls get windows, doors and shopfronts from the building's type and height, drawn by a shader so they cost no geometry |
@@ -74,16 +74,16 @@ npm run build      # static site in dist/, deployable to any web server
 ## Rebuilding the map data
 
 ```sh
-python3 -I data-prep/build_buildings.py   # public/data/buildings/
-python3 -I data-prep/build_roads.py       # public/data/roads/
 python3 -I data-prep/build_cameras.py     # public/data/cameras.json
 python3 -I data-prep/build_snapshot.py    # elevation + NAIP photos (photos stay in data-prep/.cache)
 python3 -I data-prep/build_trees_lidar.py # public/data/trees/ (+ canopy heights in data-prep/.cache)
+python3 -I data-prep/build_buildings.py   # public/data/buildings/ (uses the cameras and both caches)
+python3 -I data-prep/build_roads.py       # public/data/roads/ (uses the buildings for street lights)
 python3 -I data-prep/build_landcover.py   # public/tiles/landcover/, coverage.json
 ```
 
 The scripts need `pip install numpy pillow pyarrow`; the lidar step also needs
-`pip install laspy lazrs`.
+`pip install laspy lazrs pyproj`.
 
 `build_snapshot.py` exports NAIP from the USGS image service in blocks of up
 to 3,840 px (splitting a block when the service times out) and cuts them into
@@ -108,6 +108,16 @@ subtracts the ground to get canopy height, masks building footprints, and finds
 tree tops as local height peaks; each crown's width comes from how far the
 canopy around the peak stays above half its height. It takes about an hour.
 Run it before `build_landcover.py`, which uses its cached canopy heights.
+
+`build_buildings.py` measures the buildings within a mile of a camera with
+`building_detail.py`. It needs the lidar canopy heights (which include roofs)
+and the NAIP photo tiles cached by the two steps before it; without them it
+writes the map data as is. Each footprint is slid up to 2.5 m to best match
+the lidar, then split into rectangles if it is right-angled (L, T and U
+shapes). Each rectangle is fitted with flat, gabled and hipped roofs of free
+eave height and pitch, ignoring trees that overhang it, and the best fit is
+kept. Houses lean towards pitched roofs. The roof colour is the photo's
+median colour inside the footprint, leaving out anything green.
 
 `build_cameras.py` uses only the standard library. It reads the nationwide feed
 behind [DeFlock's map](https://maps.deflock.org) (built from OpenStreetMap) and

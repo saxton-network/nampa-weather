@@ -8,6 +8,11 @@ Output: public/data/buildings/index.json plus one <i>_<j>.json per tile, where
 tile (i, j) covers local east x in [i*size, (i+1)*size) and local z in
 [j*size, (j+1)*size) (local z points south, matching the viewer's frame).
 
+Buildings within a mile of a plate-reader camera (public/data/cameras.json)
+are measured from lidar and photos where the caches of build_trees_lidar.py
+and build_snapshot.py exist (see building_detail.py): footprints lined up
+with the lidar, real eave and ridge heights, roof shapes and roof colours.
+
 Run: python3 -I data-prep/build_buildings.py   (from the repository root)
 Needs: pyarrow, numpy, Pillow. Downloads ~25 MB of terrain tiles and reads
 Overture GeoParquet anonymously from S3.
@@ -18,6 +23,7 @@ import math
 import os
 import sys
 import time
+from concurrent.futures import ProcessPoolExecutor
 
 import numpy as np
 import pyarrow.compute as pc
@@ -26,8 +32,11 @@ import pyarrow.fs as pafs
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from common import OVERTURE_BUCKET, OVERTURE_RELEASE, REGION, ROOT, ELEV_ZOOM, Elevation, parse_wkb, to_local
+import building_detail
 
 OUT_DIR = os.path.join(ROOT, "public", "data", "buildings")
+CAMERAS = os.path.join(ROOT, "public", "data", "cameras.json")
+DETAIL_RADIUS = 1609  # m: one mile around each camera
 
 
 # --- attribute encoding -----------------------------------------------------
@@ -57,6 +66,24 @@ def color_code(c):
     return None
 
 
+def camera_points():
+    if not os.path.exists(CAMERAS):
+        return None
+    cams = json.load(open(CAMERAS))["cameras"]
+    lat = np.array([c["lat"] for c in cams])
+    lon = np.array([c["lon"] for c in cams])
+    x, _, z = to_local(lat, lon, np.zeros_like(lat))
+    return np.column_stack([x, z])
+
+
+def measure(job):
+    lat, lon, x, z, house = job
+    try:
+        return building_detail.refine(lat, lon, x, z, house)
+    except Exception:
+        return None
+
+
 def main():
     t0 = time.time()
     bbox = REGION["buildingBbox"]
@@ -81,7 +108,7 @@ def main():
     rows = table.to_pylist()
     print(f"overture: {len(rows)} buildings in bbox ({time.time() - t0:.0f}s)", flush=True)
 
-    tiles = {}
+    shapes = []
     skipped = 0
     for r in rows:
         if r.get("is_underground"):
@@ -107,25 +134,72 @@ def main():
                 skipped += 1
                 continue
             if area < 0:
-                x, z = x[::-1], z[::-1]
-            cx, cz = float(x.mean()), float(z.mean())
-            i, j = math.floor(cx / size), math.floor(cz / size)
-            ox, oz = i * size, j * size
+                x, z, lat, lon = x[::-1], z[::-1], lat[::-1], lon[::-1]
+            shapes.append((r, lat, lon, x, z, float(cy), abs(area)))
 
-            h = r.get("height")
-            floors = r.get("num_floors")
-            est = 0
-            if h is None or h <= 0:
-                est = 1
-                h = floors * 3.2 if floors else (4.5 if abs(area) < 300 else 6.0)
-            minh = r.get("min_height") or 0.0
-            roof = ROOF.get(r.get("roof_shape") or "", -1)
-            ring = np.column_stack([np.round((x - ox) * 10), np.round((z - oz) * 10)]).astype(int).ravel().tolist()
-            rec = [round(float(cy), 2), round(float(h), 1), round(float(minh), 1), kind_code(r.get("subtype"), r.get("class")), roof, est, ring]
-            fc, rc = color_code(r.get("facade_color")), color_code(r.get("roof_color"))
-            if fc is not None or rc is not None:
-                rec += [fc, rc]
-            tiles.setdefault((i, j), []).append(rec)
+    # Measure the buildings near cameras.
+    details = [None] * len(shapes)
+    cams = camera_points()
+    if cams is not None and building_detail.have_caches():
+        jobs, where = [], []
+        for k, (r, lat, lon, x, z, cy, area) in enumerate(shapes):
+            cx, cz = x.mean(), z.mean()
+            if np.min(np.hypot(cams[:, 0] - cx, cams[:, 1] - cz)) < DETAIL_RADIUS:
+                house = kind_code(r.get("subtype"), r.get("class")) == 1 or (kind_code(r.get("subtype"), r.get("class")) == 0 and area < 400)
+                jobs.append((lat, lon, x, z, house))
+                where.append(k)
+        print(f"measuring {len(jobs)} buildings near cameras from lidar and photos...", flush=True)
+        with ProcessPoolExecutor(4) as pool:
+            for k, res in zip(where, pool.map(measure, jobs, chunksize=64)):
+                details[k] = res
+    else:
+        print("no cameras or no lidar/photo caches: skipping building measurement", flush=True)
+
+    tiles = {}
+    counts = {"measured": 0, "shifted": 0, "pitched": 0, "colored": 0}
+    for (r, lat, lon, x, z, cy, area), det in zip(shapes, details):
+        if det:
+            sx, sz = det["shift"]
+            if sx or sz:
+                x, z = x + sx, z + sz
+                counts["shifted"] += 1
+        cx, cz = float(x.mean()), float(z.mean())
+        i, j = math.floor(cx / size), math.floor(cz / size)
+        ox, oz = i * size, j * size
+
+        h = r.get("height")
+        floors = r.get("num_floors")
+        est = 0
+        if h is None or h <= 0:
+            est = 1
+            h = floors * 3.2 if floors else (4.5 if area < 300 else 6.0)
+        minh = r.get("min_height") or 0.0
+        roof = ROOF.get(r.get("roof_shape") or "", -1)
+        fc, rc = color_code(r.get("facade_color")), color_code(r.get("roof_color"))
+        parts = None
+        if det:
+            if "height" in det:
+                h, est = det["height"], 2
+                counts["measured"] += 1
+            if "roof_rgb" in det and rc is None:
+                rc = building_detail.roof_hex(det["roof_rgb"])
+                counts["colored"] += 1
+            if det.get("parts") and minh <= 0:
+                parts = []
+                for (pcx, pcz, ax, az, L, W, half, eave, ridge) in det["parts"]:
+                    parts += [round((pcx - ox) * 10), round((pcz - oz) * 10), round(ax * 1000), round(az * 1000),
+                              round(L * 10), round(W * 10), round(half * 10), round(eave * 10), round(ridge * 10)]
+                if any(p[8] - p[7] > 0.05 for p in det["parts"]):
+                    counts["pitched"] += 1
+        ring = np.column_stack([np.round((x - ox) * 10), np.round((z - oz) * 10)]).astype(int).ravel().tolist()
+        rec = [round(cy, 2), round(float(h), 1), round(float(minh), 1), kind_code(r.get("subtype"), r.get("class")), roof, est, ring]
+        if fc is not None or rc is not None or parts:
+            rec += [fc, rc]
+        if parts:
+            rec.append(parts)
+        tiles.setdefault((i, j), []).append(rec)
+    print(f"near cameras: {counts['measured']} heights from lidar, {counts['pitched']} pitched roofs, "
+          f"{counts['shifted']} footprints lined up, {counts['colored']} roof colours", flush=True)
 
     os.makedirs(OUT_DIR, exist_ok=True)
     for f in os.listdir(OUT_DIR):
@@ -142,7 +216,7 @@ def main():
         json.dump({
             "source": f"Overture Maps Foundation buildings, release {OVERTURE_RELEASE}",
             "attribution": "© Overture Maps Foundation, © OpenStreetMap contributors, Microsoft, Esri Community Maps",
-            "fields": ["baseY", "height", "minHeight", "kind", "roof", "heightEstimated", "ringDecimeters", "facadeColor?", "roofColor?"],
+            "fields": ["baseY", "height", "minHeight", "kind", "roof", "heightEstimated (0 map, 1 guessed, 2 lidar)", "ringDecimeters", "facadeColor?", "roofColor?", "roofParts?"],
             "tileSize": size,
             "tiles": index,
         }, f, separators=(",", ":"))

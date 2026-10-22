@@ -1,8 +1,12 @@
 // Builds one building tile's mesh off the main thread.
 //
 // Input records come from data-prep/build_buildings.py:
-//   [baseY, height, minHeight, kind, roof, heightEstimated, ringDecimeters, facadeColor?, roofColor?]
+//   [baseY, height, minHeight, kind, roof, heightEstimated, ringDecimeters, facadeColor?, roofColor?, roofParts?]
 // The ring is counter-clockwise in (x, -z), in decimetres from the tile origin.
+// roofParts (buildings measured from lidar) holds 9 numbers per rectangle:
+//   centre x, z (dm), ridge direction x, z (1/1000), half length along the
+//   ridge, half width, ridge half length (dm; = half length for a gable),
+//   eave and ridge height above the base (dm). Flat parts have ridge = eave.
 // Output is non-indexed geometry with flat normals and linear vertex colours
 // (albedo for the atmosphere's post-process lighting), plus a per-vertex
 // facade attribute [u along the wall, height above ground, wall length, style]
@@ -171,10 +175,135 @@ function addPitchedRoof(b, box, eaveY, ridgeY, type, roofColor, wallColor) {
   }
 }
 
+// Facade style from the building's type and size, and the wall that gets the
+// front door (the longest).
+function facadeStyle(kind, height, area, xs, zs) {
+  const tall = height > 9
+  let style = kind === KIND_RESIDENTIAL ? (tall ? 2 : 0) : kind === KIND_COMMERCIAL ? 1 : kind === 0 ? (area > 400 ? 1 : 0) : 2
+  if (area < 35) style = -1
+  let doorEdge = -1
+  let longest = 0
+  for (let i = 0, n = xs.length; i < n; i++) {
+    const len = Math.hypot(xs[(i + 1) % n] - xs[i], zs[(i + 1) % n] - zs[i])
+    if (len > longest) {
+      longest = len
+      doorEdge = i
+    }
+  }
+  return { style, doorEdge }
+}
+
+// A building measured from lidar: walls up to the eave of the roof part they
+// belong to, a flat cap at the lowest eave closing the footprint, and each
+// part's own roof (with plain walls from the cap up to its eave where it
+// stands taller).
+function addMeasured(b, rec, xs, zs, area, parts, wallColor, h) {
+  const [baseY, height, minHeight, kind, , , , , roofHex] = rec
+  const n = xs.length
+  const pitched = parts.some((p) => p.ridge - p.eave > 0.05)
+  const roofColor = roofHex != null ? hexToLinear(roofHex) : pick(pitched ? LINEAR.roofPitched : LINEAR.roofFlat, h >>> 3)
+  const cap = Math.min(...parts.map((p) => p.eave))
+  const bottom = minHeight > 0 ? baseY + minHeight : baseY - FOUNDATION
+  const { style, doorEdge } = facadeStyle(kind, height, area, xs, zs)
+  for (let i = 0; i < n; i++) {
+    const j = (i + 1) % n
+    const mx = (xs[i] + xs[j]) / 2
+    const mz = (zs[i] + zs[j]) / 2
+    let top = Infinity
+    for (const p of parts) if (partDistance(p, mx, mz) < 0.6) top = Math.min(top, p.eave)
+    if (top === Infinity) top = cap
+    const out = [-(zs[j] - zs[i]), 0, xs[j] - xs[i]]
+    const len = Math.hypot(xs[j] - xs[i], zs[j] - zs[i])
+    const st = style < 0 ? -1 : style + (i === doorEdge ? 10 : 0)
+    const v0 = bottom - baseY
+    b.quad(
+      [xs[i], bottom, zs[i]], [xs[j], bottom, zs[j]], [xs[j], baseY + top, zs[j]], [xs[i], baseY + top, zs[i]], wallColor, out,
+      [0, v0, len, st], [len, v0, len, st], [len, top, len, st], [0, top, len, st]
+    )
+  }
+  const contour = []
+  for (let i = 0; i < n; i++) contour.push(new Vector2(xs[i], -zs[i]))
+  for (const [p, q, r] of ShapeUtils.triangulateShape(contour, [])) {
+    b.tri([xs[p], baseY + cap, zs[p]], [xs[q], baseY + cap, zs[q]], [xs[r], baseY + cap, zs[r]], roofColor, [0, 1, 0])
+  }
+  for (const p of parts) {
+    const vx = -p.az
+    const vz = p.ax
+    const L = p.L - 0.05
+    const W = p.W - 0.05
+    const at = (u, v, y) => [p.cx + p.ax * u + vx * v, y, p.cz + p.az * u + vz * v]
+    if (p.eave > cap + 0.2) {
+      // Plain walls from the cap up to this part's eave, set in slightly so
+      // they hide behind the outer walls where the two coincide.
+      const y0 = baseY + cap
+      const y1 = baseY + p.eave
+      const sides = [[-L, -W, L, -W, [vx * -1, 0, vz * -1]], [L, -W, L, W, [p.ax, 0, p.az]], [L, W, -L, W, [vx, 0, vz]], [-L, W, -L, -W, [-p.ax, 0, -p.az]]]
+      for (const [u0, v0, u1, v1, nrm] of sides) b.quad(at(u0, v0, y0), at(u1, v1, y0), at(u1, v1, y1), at(u0, v0, y1), wallColor, nrm)
+      if (p.ridge - p.eave <= 0.05) b.quad(at(-L, -W, y1), at(L, -W, y1), at(L, W, y1), at(-L, W, y1), roofColor, [0, 1, 0])
+    }
+    if (p.ridge - p.eave > 0.05) addPartRoof(b, p, baseY, roofColor, wallColor)
+  }
+}
+
+// Roof over one lidar-measured rectangle: a gable when the ridge runs its
+// full length, otherwise hipped ends.
+function addPartRoof(b, p, baseY, roofColor, wallColor) {
+  const { cx, cz, ax, az, L, W, half, eave, ridge } = p
+  const vx = -az
+  const vz = ax
+  const at = (u, v, y) => [cx + ax * u + vx * v, y, cz + az * u + vz * v]
+  const up = [0, 1, 0]
+  const top = baseY + ridge
+  const low = baseY + eave
+  const over = 0.35
+  const slope = (ridge - eave) / Math.max(W, 0.5)
+  const e = low - over * slope
+  const Wo = W + over
+  if (half >= L - 0.01) {
+    const Lo = L + over
+    const c00 = at(-Lo, -Wo, e), c10 = at(Lo, -Wo, e), c11 = at(Lo, Wo, e), c01 = at(-Lo, Wo, e)
+    const r0 = at(-Lo, 0, top), r1 = at(Lo, 0, top)
+    b.quad(c00, c10, r1, r0, roofColor, up)
+    b.quad(c01, c11, r1, r0, roofColor, up)
+    b.tri(at(-L, -W, low), at(-L, W, low), at(-L, 0, top), wallColor, [-ax, 0, -az])
+    b.tri(at(L, -W, low), at(L, W, low), at(L, 0, top), wallColor, [ax, 0, az])
+  } else {
+    const Lo = L + over
+    const c00 = at(-Lo, -Wo, e), c10 = at(Lo, -Wo, e), c11 = at(Lo, Wo, e), c01 = at(-Lo, Wo, e)
+    const r0 = at(-half, 0, top), r1 = at(half, 0, top)
+    b.quad(c00, c10, r1, r0, roofColor, up)
+    b.quad(c01, c11, r1, r0, roofColor, up)
+    b.tri(c00, c01, r0, roofColor, up)
+    b.tri(c10, c11, r1, roofColor, up)
+  }
+}
+
+function decodeParts(list) {
+  const parts = []
+  for (let k = 0; k + 8 < list.length; k += 9) {
+    const ax = list[k + 2] / 1000
+    const az = list[k + 3] / 1000
+    const n = Math.hypot(ax, az) || 1
+    parts.push({
+      cx: list[k] / 10, cz: list[k + 1] / 10, ax: ax / n, az: az / n,
+      L: list[k + 4] / 10, W: list[k + 5] / 10, half: list[k + 6] / 10,
+      eave: list[k + 7] / 10, ridge: list[k + 8] / 10
+    })
+  }
+  return parts
+}
+
+// Distance from (x, z) to a part's rectangle (0 inside).
+function partDistance(p, x, z) {
+  const du = (x - p.cx) * p.ax + (z - p.cz) * p.az
+  const dv = -(x - p.cx) * p.az + (z - p.cz) * p.ax
+  return Math.hypot(Math.max(Math.abs(du) - p.L, 0), Math.max(Math.abs(dv) - p.W, 0))
+}
+
 function buildTile(tile) {
   const b = new Builder()
   for (const rec of tile.b) {
-    const [baseY, height, minHeight, kind, roofHint, , ring, facadeHex, roofHex] = rec
+    const [baseY, height, minHeight, kind, roofHint, , ring, facadeHex, roofHex, partList] = rec
     const n = ring.length / 2
     if (n < 3) continue
     const xs = new Float64Array(n)
@@ -189,6 +318,11 @@ function buildTile(tile) {
     const wallColor = facadeHex != null
       ? hexToLinear(facadeHex)
       : pick(kind === KIND_RESIDENTIAL ? LINEAR.wallResidential : kind === KIND_COMMERCIAL ? LINEAR.wallCommercial : LINEAR.wallOther, h)
+
+    if (partList?.length) {
+      addMeasured(b, rec, xs, zs, area, decodeParts(partList), wallColor, h)
+      continue
+    }
 
     let roof = roofHint
     let box = null
@@ -218,20 +352,7 @@ function buildTile(tile) {
       top = eave + roofH
     }
 
-    // Facade style from the building's type and size; the longest wall of a
-    // house or shop gets the door.
-    const tall = height > 9
-    let style = kind === KIND_RESIDENTIAL ? (tall ? 2 : 0) : kind === KIND_COMMERCIAL ? 1 : kind === 0 ? (area > 400 ? 1 : 0) : 2
-    if (area < 35) style = -1
-    let doorEdge = -1
-    let longest = 0
-    for (let i = 0; i < n; i++) {
-      const len = Math.hypot(xs[(i + 1) % n] - xs[i], zs[(i + 1) % n] - zs[i])
-      if (len > longest) {
-        longest = len
-        doorEdge = i
-      }
-    }
+    const { style, doorEdge } = facadeStyle(kind, height, area, xs, zs)
     for (let i = 0; i < n; i++) {
       const j = (i + 1) % n
       const out = [-(zs[j] - zs[i]), 0, xs[j] - xs[i]]

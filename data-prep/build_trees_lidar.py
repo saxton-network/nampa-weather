@@ -1,10 +1,15 @@
 #!/usr/bin/env python3
-"""Place trees where they really are, from the 2018 USGS 3DEP lidar survey.
+"""Place trees where they really are, from USGS 3DEP lidar.
 
-The ID_SouthernID_21_2018 point cloud (Entwine EPT on the usgs-lidar-public
-bucket, Web Mercator) covers Nampa at several points per square metre. This
-script reduces it to a canopy height model on the z17 Web Mercator pixel grid
-(about 0.87 m, the same grid as the ground-type tiles):
+Two surveys cover Nampa between them:
+  ID_SouthernGaps_D23 (flown 2023, published 2025): the northeast, including
+      downtown. 1 km LAZ tiles (UTM 11N) from the USGS download server; each
+      tile is reduced once and cached in data-prep/.cache/lidar-2023/.
+  ID_SouthernID_21_2018: the southwest. Entwine EPT on the usgs-lidar-public
+      bucket (Web Mercator), streamed node by node.
+Where the 2023 survey has returns it wins, being newer; the 2018 survey fills
+in the rest. Both are reduced to a canopy height model on the z17 Web Mercator
+pixel grid (about 0.87 m, the same grid as the ground-type tiles):
 
   top    highest non-noise return per pixel
   ground lowest ground-classified return per pixel, gaps filled from coarser levels
@@ -25,7 +30,7 @@ Outputs
   data-prep/.cache/chm/17/<x>/<y>.png  canopy height per z17 tile (0.2 m units),
       used by build_landcover.py to correct its ground types
 
-Run: python3 -I data-prep/build_trees_lidar.py   (needs laspy and lazrs)
+Run: python3 -I data-prep/build_trees_lidar.py   (needs laspy, lazrs and pyproj)
 """
 
 import io
@@ -52,6 +57,10 @@ from common import (CACHE_DIR, ELEV_ZOOM, OVERTURE_BUCKET, OVERTURE_RELEASE, REG
                     parse_wkb, to_local)
 
 EPT = "https://s3-us-west-2.amazonaws.com/usgs-lidar-public/ID_SouthernID_21_2018"
+D23 = "ID_SouthernGaps_D23/ID_SouthernGaps_2_D23"
+D23_INDEX = f"https://prd-tnm.s3.amazonaws.com/StagedProducts/Elevation/LPC/Projects/{D23}/ID_SouthernGaps_2_D23.vpc"
+D23_DATA = f"https://rockyweb.usgs.gov/vdelivery/Datasets/Staged/Elevation/LPC/Projects/{D23}/"
+D23_CACHE = os.path.join(CACHE_DIR, "lidar-2023")
 TREES = os.path.join(ROOT, "public", "data", "trees")
 CHM_DIR = os.path.join(CACHE_DIR, "chm")
 Z = 17
@@ -65,14 +74,16 @@ HALO = 64
 
 
 def fetch(url, timeout=120):
-    for attempt in range(5):
+    for attempt in range(8):
         try:
             with urllib.request.urlopen(url, timeout=timeout) as r:
                 return r.read()
-        except Exception:
-            if attempt == 4:
+        except Exception as err:
+            if attempt == 7:
                 raise
-            time.sleep(2 * 2 ** attempt)
+            # The USGS download server rate-limits (HTTP 429): back off for longer.
+            busy = getattr(err, "code", None) == 429
+            time.sleep(min(60 * 2 ** attempt, 900) if busy else 2 * 2 ** attempt)
 
 
 # --- grid ------------------------------------------------------------------------
@@ -133,8 +144,13 @@ def ept_nodes():
 def reduce_node(key):
     """Download one EPT node and reduce it to per-pixel top and ground (uint16 dm)."""
     las = laspy.read(io.BytesIO(fetch(f"{EPT}/ept-data/{'-'.join(map(str, key))}.laz")))
-    x, y, z = np.asarray(las.x), np.asarray(las.y), np.asarray(las.z)
-    cls = np.asarray(las.classification)
+    return bin_points(np.asarray(las.x), np.asarray(las.y), np.asarray(las.z), np.asarray(las.classification))
+
+
+def bin_points(x, y, z, cls):
+    """Web Mercator points to per-pixel top and ground (uint16 dm) over their extent."""
+    if not len(x):
+        return None
     ix = np.floor((x + HALF) / PX).astype(np.int64) - GX
     iy = np.floor((HALF - y) / PX).astype(np.int64) - GY
     keep = (ix >= 0) & (ix < GW) & (iy >= 0) & (iy < GH) & (cls != 7) & (cls != 18)
@@ -151,6 +167,57 @@ def reduce_node(key):
     if g.any():
         np.minimum.at(ground, (iy[g] - y0, ix[g] - x0), zq[g])
     return x0, y0, top, ground, len(z)
+
+
+# --- 2023 LAZ tiles -----------------------------------------------------------------
+
+def grid_lonlat():
+    x0, y1 = px_to_mercator(GX, GY)
+    x1, y0 = px_to_mercator(GX + GW, GY + GH)
+    lon = lambda x: x / HALF * 180
+    lat = lambda y: math.degrees(2 * math.atan(math.exp(y / HALF * math.pi)) - math.pi / 2)
+    return lon(x0), lat(y0), lon(x1), lat(y1)
+
+
+def d23_tiles():
+    """(name, url) of the 2023 tiles overlapping the grid, from the survey's index."""
+    os.makedirs(D23_CACHE, exist_ok=True)
+    path = os.path.join(D23_CACHE, "index.vpc")
+    if not os.path.exists(path):
+        with open(path, "wb") as f:
+            f.write(fetch(D23_INDEX, timeout=300))
+    w, s, e, n = grid_lonlat()
+    out = []
+    for feat in json.load(open(path))["features"]:
+        b = feat["bbox"]  # lon, lat, z, lon, lat, z
+        if b[0] < e and b[3] > w and b[1] < n and b[4] > s:
+            href = feat["assets"]["data"]["href"]
+            out.append((feat["id"], D23_DATA + href.removeprefix("./")))
+    return sorted(out)
+
+
+_utm = None
+
+
+def reduce_laz(item):
+    """Reduce one 2023 tile to per-pixel top and ground, cached as .npz."""
+    global _utm
+    name, url = item
+    cache = os.path.join(D23_CACHE, f"{name}.npz")
+    if os.path.exists(cache):
+        z = np.load(cache)
+        return (int(z["x0"]), int(z["y0"]), z["top"], z["ground"], int(z["n"])) if int(z["n"]) else None
+    if _utm is None:
+        from pyproj import Transformer
+        _utm = Transformer.from_crs("EPSG:6340", "EPSG:3857", always_xy=True)  # NAD83(2011) UTM 11N
+    las = laspy.read(io.BytesIO(fetch(url, timeout=900)))
+    mx, my = _utm.transform(np.asarray(las.x), np.asarray(las.y))
+    res = bin_points(mx, my, np.asarray(las.z), np.asarray(las.classification))
+    if res is None:
+        np.savez(cache, x0=0, y0=0, top=np.zeros((0, 0), np.uint16), ground=np.zeros((0, 0), np.uint16), n=0)
+        return None
+    np.savez_compressed(cache, x0=res[0], y0=res[1], top=res[2], ground=res[3], n=res[4])
+    return res
 
 
 # --- raster helpers --------------------------------------------------------------
@@ -274,23 +341,42 @@ def main():
     warnings.filterwarnings("ignore", category=RuntimeWarning)  # all-NaN blocks in fill_ground
     t0 = time.time()
     print(f"grid {GW}x{GH} px at z17 from ({GX}, {GY})", flush=True)
-    nodes = ept_nodes()
-    total = sum(c for _, c in nodes)
-    print(f"lidar: {len(nodes)} EPT nodes, {total / 1e6:.0f} M points ({time.time() - t0:.0f}s)", flush=True)
-
     top = np.zeros((GH, GW), np.uint16)
     ground = np.full((GH, GW), NO_GROUND, np.uint16)
     done = 0
+
+    def add(res, skip=None):
+        nonlocal done
+        if res is None:
+            return
+        x0, y0, t, g, n = res
+        h, w = t.shape
+        if skip is not None:
+            # Pixels the newer survey already covers keep its returns only.
+            s = skip[y0:y0 + h, x0:x0 + w]
+            t, g = np.where(s, 0, t), np.where(s, NO_GROUND, g)
+        np.maximum(top[y0:y0 + h, x0:x0 + w], t, out=top[y0:y0 + h, x0:x0 + w])
+        np.minimum(ground[y0:y0 + h, x0:x0 + w], g, out=ground[y0:y0 + h, x0:x0 + w])
+        done += n
+
+    tiles23 = d23_tiles() if os.environ.get("LIDAR_2023", "1") != "0" else []
+    print(f"lidar 2023: {len(tiles23)} tiles", flush=True)
+    with ProcessPoolExecutor(3) as pool:
+        for k, res in enumerate(pool.map(reduce_laz, tiles23), 1):
+            add(res)
+            if k % 10 == 0:
+                print(f"  {k}/{len(tiles23)} tiles, {done / 1e6:.0f} M points ({time.time() - t0:.0f}s)", flush=True)
+    newer = top > 0
+
+    nodes = ept_nodes()
+    total = sum(c for _, c in nodes)
+    print(f"lidar 2018: {len(nodes)} EPT nodes, {total / 1e6:.0f} M points ({time.time() - t0:.0f}s)", flush=True)
     with ProcessPoolExecutor(4) as pool:
         for k, res in enumerate(pool.map(reduce_node, [k for k, _ in nodes], chunksize=8), 1):
-            if res is not None:
-                x0, y0, t, g, n = res
-                h, w = t.shape
-                np.maximum(top[y0:y0 + h, x0:x0 + w], t, out=top[y0:y0 + h, x0:x0 + w])
-                np.minimum(ground[y0:y0 + h, x0:x0 + w], g, out=ground[y0:y0 + h, x0:x0 + w])
-                done += n
+            add(res, newer)
             if k % 1000 == 0:
                 print(f"  {k}/{len(nodes)} nodes, {done / 1e6:.0f} M points ({time.time() - t0:.0f}s)", flush=True)
+    del newer
     print(f"reduced {done / 1e6:.0f} M points ({time.time() - t0:.0f}s)", flush=True)
 
     polys, bbx = load_buildings()
@@ -350,7 +436,7 @@ def main():
                 f.write(struct.pack("<hhfBBBB", *r))
     with open(os.path.join(TREES, "index.json"), "w") as f:
         json.dump({
-            "source": "USGS 3DEP lidar ID_SouthernID_21_2018 (public domain), building footprints from Overture Maps",
+            "source": "USGS 3DEP lidar ID_SouthernGaps_D23 (2023) and ID_SouthernID_21_2018 (public domain), building footprints from Overture Maps",
             "tileSize": size,
             "record": "int16 x_dm, int16 z_dm, float32 base_y, uint8 height (0.2 m), uint8 crown radius (0.1 m), uint8 flags (1 conifer), uint8 seed",
             "tiles": sorted([i, j, len(r)] for (i, j), r in tiles.items()),

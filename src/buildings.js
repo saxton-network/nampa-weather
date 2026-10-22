@@ -4,6 +4,56 @@ import { BufferAttribute, BufferGeometry, Group, Mesh, MeshBasicMaterial } from 
 
 const BASE = import.meta.env.BASE_URL
 
+// World-space footprint rings (flat [x, z, ...]) with bounding boxes.
+function footprints(tile) {
+  const ox = tile.i * tile.size
+  const oz = tile.j * tile.size
+  const all = { list: [], minX: Infinity, maxX: -Infinity, minZ: Infinity, maxZ: -Infinity }
+  for (const rec of tile.b) {
+    const src = rec[6]
+    const ring = new Float32Array(src.length)
+    let minX = Infinity, maxX = -Infinity, minZ = Infinity, maxZ = -Infinity
+    for (let k = 0; k < src.length; k += 2) {
+      const x = (ring[k] = ox + src[k] / 10)
+      const z = (ring[k + 1] = oz + src[k + 1] / 10)
+      if (x < minX) minX = x
+      if (x > maxX) maxX = x
+      if (z < minZ) minZ = z
+      if (z > maxZ) maxZ = z
+    }
+    all.list.push({ ring, minX, maxX, minZ, maxZ })
+    all.minX = Math.min(all.minX, minX)
+    all.maxX = Math.max(all.maxX, maxX)
+    all.minZ = Math.min(all.minZ, minZ)
+    all.maxZ = Math.max(all.maxZ, maxZ)
+  }
+  return all
+}
+
+function crossesRing(r, ax, az, bx, bz) {
+  const n = r.length
+  for (let k = 0; k < n; k += 2) {
+    const cx = r[k], cz = r[k + 1]
+    const dx = r[(k + 2) % n], dz = r[(k + 3) % n]
+    const d1 = (bx - ax) * (cz - az) - (bz - az) * (cx - ax)
+    const d2 = (bx - ax) * (dz - az) - (bz - az) * (dx - ax)
+    if (d1 > 0 === d2 > 0) continue
+    const d3 = (dx - cx) * (az - cz) - (dz - cz) * (ax - cx)
+    const d4 = (dx - cx) * (bz - cz) - (dz - cz) * (bx - cx)
+    if (d3 > 0 !== d4 > 0) return true
+  }
+  return false
+}
+
+function insideRing(r, x, z) {
+  let inside = false
+  for (let k = 0, n = r.length; k < n; k += 2) {
+    const xi = r[k], zi = r[k + 1], xj = r[(k + 2) % n], zj = r[(k + 3) % n]
+    if (zi > z !== zj > z && x < ((xj - xi) * (z - zi)) / (zj - zi) + xi) inside = !inside
+  }
+  return inside
+}
+
 export class Buildings {
   constructor({ maxConcurrent = 4 } = {}) {
     this.group = new Group()
@@ -57,6 +107,7 @@ export class Buildings {
         if (!r.ok) throw new Error(`HTTP ${r.status}`)
         return r.json()
       })
+      entry.footprints = footprints(tile)
       const out = await this.build(tile)
       if (out.error) throw new Error(out.error)
       if (this.tiles.get(key) !== entry) return
@@ -91,6 +142,22 @@ export class Buildings {
       entry.mesh.geometry.dispose()
       this.buildingCount -= entry.count
     }
+  }
+
+  // True if the ground-plane segment (x0,z0)-(x1,z1) crosses a loaded building
+  // footprint. Footprints containing the start point (x0,z0) are ignored.
+  blocks(x0, z0, x1, z1) {
+    const minX = Math.min(x0, x1), maxX = Math.max(x0, x1)
+    const minZ = Math.min(z0, z1), maxZ = Math.max(z0, z1)
+    for (const entry of this.tiles.values()) {
+      const f = entry.footprints
+      if (!f || f.maxX < minX || f.minX > maxX || f.maxZ < minZ || f.minZ > maxZ) continue
+      for (const b of f.list) {
+        if (b.maxX < minX || b.minX > maxX || b.maxZ < minZ || b.minZ > maxZ) continue
+        if (crossesRing(b.ring, x0, z0, x1, z1) && !insideRing(b.ring, x0, z0)) return true
+      }
+    }
+    return false
   }
 
   // camera: local-frame position; agl: metres above ground.

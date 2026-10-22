@@ -129,7 +129,7 @@ input[type='range'] {
 
 .debug {
   position: absolute;
-  top: 12px;
+  top: 112px;
   right: 12px;
   margin: 0;
   max-width: min(520px, calc(100vw - 24px));
@@ -164,7 +164,17 @@ input[type='range'] {
 @media (max-width: 600px) {
   .panel {
     width: auto;
-    right: 12px;
+    right: 102px;
+  }
+
+  .credits {
+    white-space: normal;
+  }
+
+  .here {
+    top: auto;
+    bottom: 64px;
+    max-width: calc(100vw - 24px);
   }
 
   .debug {
@@ -172,4 +182,116 @@ input[type='range'] {
     bottom: 120px;
     left: 12px;
   }
+}
+
+.check {
+  gap: 8px;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.check input {
+  accent-color: var(--accent);
+  margin: 0;
+}
+
+.compass {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  width: 78px;
+  padding: 6px 6px 4px;
+  border-radius: 12px;
+  background: var(--panel-bg);
+  backdrop-filter: blur(6px);
+  text-align: center;
+}
+
+.compass svg {
+  display: block;
+  width: 64px;
+  height: 64px;
+  margin: 0 auto;
+  overflow: visible;
+}
+
+.c-ring {
+  fill: rgba(0, 0, 0, 0.25);
+  stroke: rgba(255, 255, 255, 0.35);
+  stroke-width: 2;
+}
+
+.c-notch {
+  fill: var(--accent);
+}
+
+.c-tick {
+  stroke: rgba(255, 255, 255, 0.55);
+  stroke-width: 1.6;
+}
+
+.c-north {
+  fill: #ff5a4f;
+}
+
+.c-south {
+  fill: rgba(255, 255, 255, 0.75);
+}
+
+.c-letter {
+  fill: #fff;
+  font: 700 12px system-ui, sans-serif;
+  text-anchor: middle;
+  dominant-baseline: central;
+}
+
+.c-letter.n {
+  fill: #ff8a80;
+}
+
+.heading {
+  margin-top: 2px;
+  font: 600 11px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  color: var(--muted);
+}
+
+.here {
+  position: absolute;
+  top: 14px;
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 6px 14px;
+  border-radius: 999px;
+  background: var(--panel-bg);
+  backdrop-filter: blur(6px);
+  font-weight: 600;
+  white-space: nowrap;
+  max-width: calc(100vw - 380px);
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.labels {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  pointer-events: none !important;
+}
+
+.label {
+  position: absolute;
+  left: 0;
+  top: 0;
+  white-space: nowrap;
+  color: #fff;
+  letter-spacing: 0.01em;
+  text-shadow:
+    0 0 2px rgba(0, 0, 0, 0.95),
+    0 0 4px rgba(0, 0, 0, 0.8),
+    0 1px 3px rgba(0, 0, 0, 0.7);
+  will-change: transform;
+}
+
+.label.major {
+  color: #ffe9a8;
 }

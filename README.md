@@ -15,11 +15,12 @@ It is a static site: everything runs in the browser, with no server code.
 | Terrain | [AWS Terrain Tiles](https://registry.opendata.aws/terrain-tiles/) (terrarium PNG, USGS 3DEP in the US) | Streamed quadtree, elevation to z15 (about 3.5 m), with Earth curvature built in |
 | Imagery | Esri World Imagery (default, to z19, about 0.2 m) or USGS National Map / NAIP (to z16) | Switchable in the panel |
 | Buildings | [Overture Maps](https://overturemaps.org/) buildings, release 2026-10-21.0 | 77,803 buildings, pre-cut into 1 km tiles in `public/data/buildings/`, meshed in a Web Worker. Houses get gable or hip roofs |
+| Street names | Overture Maps transportation (from OpenStreetMap) | 12,070 named road segments in `public/data/roads/`. Labels follow the roads in drone mode, stand at sign height in walk mode, and are hidden when a building blocks the view |
 | Sky and light | [`@takram/three-atmosphere`](https://github.com/takram-design-engineering/three-geospatial) | Physically based sky, sun and moon for the real date and time, plus aerial haze |
 | Engine | three.js 0.186 + postprocessing | Logarithmic depth buffer, SMAA |
 
 The heavy data (terrain and imagery) streams from public tile servers. Only the
-building tiles (7.3 MB) are shipped with the site.
+building tiles (7.3 MB) and street tiles (2.2 MB) are shipped with the site.
 
 ![Downtown Nampa from drone height](docs/screenshots/downtown.jpg)
 
@@ -27,6 +28,8 @@ building tiles (7.3 MB) are shipped with the site.
 
 - **Drone mode (default):** drag to pan, right-drag (or two fingers) to rotate, scroll to zoom toward the cursor.
 - **Walk mode:** press **V** or click *Walk*. Click to capture the mouse, use WASD or the arrow keys to walk, and hold Shift to run. Esc releases the mouse. On touch screens, drag to look and hold ▲ ▼ to walk.
+- **Compass** (top right): the red needle points north and the readout shows which way you are facing. Click it or press **N** to turn and face north.
+- **Street names:** press **L** or use the checkbox to show or hide them. The pill at the top shows the street you are on (walk mode) or the one under the view's centre (drone mode).
 - **Time slider:** sets the time of day in Boise time. *Now* returns to real time.
 - **Debug panel:** press **`** or click *Debug*. It shows FPS, camera position, tile counts, draw calls and errors. A screenshot of this panel is the most useful thing to send when something looks wrong.
 
@@ -39,6 +42,7 @@ URL parameters, handy for sharing a view:
 | `imagery` | `esri` or `usgs` |
 | `quality` | `low` or `high` (default is `low` on touch devices) |
 | `exposure` | Tone-mapping exposure (default 10) |
+| `labels` | `0` hides street names |
 | `debug` | Open the debug panel |
 
 ## Running locally
@@ -53,15 +57,17 @@ npm run build      # static site in dist/, deployable to any web server
 
 `dist/` uses relative paths, so it works from a subfolder or its own subdomain.
 
-## Rebuilding the building data
+## Rebuilding the map data
 
 ```sh
-python3 -I data-prep/build_buildings.py
+python3 -I data-prep/build_buildings.py   # public/data/buildings/
+python3 -I data-prep/build_roads.py       # public/data/roads/
 ```
 
-This needs Python 3 with `pyarrow`, `numpy` and `Pillow`. It reads Overture
-GeoParquet anonymously from S3, samples ground height from the same terrain
-tiles the viewer uses, and rewrites `public/data/buildings/`. The area and
+These need Python 3 with `pyarrow`, `numpy` and `Pillow`. They read Overture
+GeoParquet anonymously from S3 and sample ground height from the same terrain
+tiles the viewer uses (cached in `data-prep/.cache/`). Shared geodesy and
+terrain code lives in `data-prep/common.py`. The area and
 origin are set in `src/region.json`. Set `OVERTURE_RELEASE` to use a newer
 Overture release.
 
@@ -91,8 +97,8 @@ USGS The National Map / USDA NAIP · Terrain: AWS Terrain Tiles (USGS 3DEP, Mapz
 Buildings © Overture Maps Foundation, © OpenStreetMap contributors, Microsoft, Esri Community Maps ·
 Atmosphere: takram three-geospatial (MIT).
 
-**Data license.** The building tiles in `public/data/buildings/` are derived from
-Overture Maps buildings. They are redistributed under the same terms:
+**Data license.** The building and street tiles in `public/data/` are derived from
+Overture Maps data. They are redistributed under the same terms:
 [ODbL 1.0](https://opendatacommons.org/licenses/odbl/1-0/) for parts derived from
 OpenStreetMap and [CDLA-Permissive-2.0](https://cdla.dev/permissive-2-0/) for the rest.
 

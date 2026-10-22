@@ -8,8 +8,22 @@ import { geodeticToLocal, localToGeodetic } from './geo.js'
 const DEG = Math.PI / 180
 const EYE_HEIGHT = 1.7
 const MIN_DRONE_AGL = 2.5
+const Y_AXIS = new Vector3(0, 1, 0)
 const geo = { lat: 0, lon: 0, height: 0 }
 const tmp = new Vector3()
+const fwd = new Vector3()
+
+// Wraps an angle in radians to (-PI, PI].
+const wrap = (a) => a - 2 * Math.PI * Math.floor((a + Math.PI) / (2 * Math.PI))
+
+// Compass heading of the view in degrees clockwise from north, [0, 360).
+// Looking straight down, the top of the screen counts as "forward".
+export function cameraHeading(camera) {
+  camera.getWorldDirection(fwd)
+  if (Math.hypot(fwd.x, fwd.z) < 0.05) fwd.copy(camera.up).applyQuaternion(camera.quaternion)
+  const deg = (Math.atan2(fwd.x, -fwd.z) * 180) / Math.PI
+  return (deg + 360) % 360
+}
 
 // Local-frame y of the ground directly below `p`, or null if not loaded yet.
 function groundY(terrain, p, extra = 0) {
@@ -45,6 +59,11 @@ export class DroneControls {
     this.controls.enabled = v
   }
 
+  // Smoothly turns the view to face north, orbiting around the target.
+  faceNorth() {
+    this.spin = wrap(cameraHeading(this.camera) * DEG)
+  }
+
   // heading: degrees clockwise from north; pitch: degrees, negative looks down.
   lookAt(target, { distance, heading, pitch }) {
     const h = heading * DEG
@@ -56,8 +75,15 @@ export class DroneControls {
     this.controls.update()
   }
 
-  update() {
+  update(dt) {
     const { controls, camera } = this
+    if (this.spin) {
+      // Rotating the offset by +a about +y lowers the heading by a.
+      const step = Math.abs(this.spin) < 0.002 ? this.spin : this.spin * Math.min(1, dt * 7)
+      tmp.subVectors(camera.position, controls.target).applyAxisAngle(Y_AXIS, step)
+      camera.position.copy(controls.target).add(tmp)
+      this.spin -= step
+    }
     controls.update()
     // Keep the orbit target on the ground so rotating pivots around a real point.
     const gy = groundY(this.terrain, controls.target)
@@ -110,6 +136,7 @@ export class WalkControls {
   }
 
   look(dx, dy) {
+    this.yawTarget = null
     this.yaw -= dx * 0.0025
     this.pitch = MathUtils.clamp(this.pitch - dy * 0.0025, -85 * DEG, 85 * DEG)
   }
@@ -127,6 +154,10 @@ export class WalkControls {
     return -this.yaw / DEG
   }
 
+  faceNorth() {
+    this.yawTarget = 0
+  }
+
   exit() {
     if (document.pointerLockElement === this.dom) document.exitPointerLock()
     this.keys.clear()
@@ -141,6 +172,11 @@ export class WalkControls {
     if (k.has('KeyS') || k.has('ArrowDown')) fwd -= 1
     if (k.has('KeyD') || k.has('ArrowRight')) side += 1
     if (k.has('KeyA') || k.has('ArrowLeft')) side -= 1
+    if (this.yawTarget != null) {
+      const diff = wrap(this.yawTarget - this.yaw)
+      this.yaw += Math.abs(diff) < 0.002 ? diff : diff * Math.min(1, dt * 7)
+      if (Math.abs(diff) < 0.002) this.yawTarget = null
+    }
     const run = k.has('ShiftLeft') || k.has('ShiftRight')
     const speed = (run ? this.runSpeed : this.speed) * dt
     const sin = Math.sin(this.yaw)

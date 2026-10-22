@@ -1,10 +1,11 @@
 import './style.css'
 import { PerspectiveCamera, Scene, Timer, Vector3, WebGLRenderer } from 'three'
 import { Buildings } from './buildings.js'
-import { DroneControls, WalkControls, groundHeightBelow } from './controls.js'
+import { DroneControls, WalkControls, cameraHeading, groundHeightBelow } from './controls.js'
 import { geodeticToLocal } from './geo.js'
 import region from './region.json'
 import { Sky } from './sky.js'
+import { Streets } from './streets.js'
 import { IMAGERY_PROVIDERS, TERRAIN_CREDIT, Terrain } from './terrain.js'
 import { atLocalHours, localHours } from './time.js'
 import { UI } from './ui.js'
@@ -84,19 +85,23 @@ const ui = new UI({
     scene.add(terrain.group)
     updateCredits()
   },
-  onTouchMove: (dir) => (walk.touchMove = dir)
+  onTouchMove: (dir) => (walk.touchMove = dir),
+  onFaceNorth: () => (mode === 'walk' ? walk.faceNorth() : drone.faceNorth()),
+  onLabels: (on) => (streets.visible = on)
 })
+const streets = new Streets(ui.root)
+if (params.get('labels') === '0') {
+  streets.visible = false
+  ui.labelsBox.checked = false
+}
 ui.setTime(date, localHours(date))
 
+const MAP_DATA_CREDIT = 'Streets and buildings © OpenStreetMap contributors, Overture Maps Foundation, Microsoft, Esri Community Maps'
+
 function updateCredits() {
-  ui.setCredits([
-    IMAGERY_PROVIDERS[imageryKey].credit,
-    TERRAIN_CREDIT,
-    buildings.attribution ?? 'Buildings © Overture Maps Foundation, © OpenStreetMap contributors'
-  ])
+  ui.setCredits([IMAGERY_PROVIDERS[imageryKey].credit, TERRAIN_CREDIT, MAP_DATA_CREDIT])
 }
 updateCredits()
-buildings.ready.then(updateCredits)
 
 // --- camera modes -----------------------------------------------------------
 function groundPoint(lat, lon) {
@@ -105,6 +110,7 @@ function groundPoint(lat, lon) {
 }
 
 function setMode(next, { at, heading } = {}) {
+  if (next === mode && !at) return
   if (next === 'walk') {
     const p = at ?? drone.controls.target.clone()
     const dir = new Vector3().subVectors(drone.controls.target, camera.position)
@@ -141,7 +147,7 @@ function applyPreset(p) {
 }
 
 applyPreset(PRESETS[params.get('view')] ?? PRESETS.overview)
-setMode(mode)
+ui.setMode(mode)
 
 addEventListener('resize', () => {
   camera.aspect = innerWidth / innerHeight
@@ -155,12 +161,15 @@ document.addEventListener('keydown', (e) => {
   if (e.code === 'KeyV') setMode(mode === 'walk' ? 'drone' : 'walk')
 })
 
+const occludedByBuildings = (x0, z0, x1, z1) => buildings.blocks(x0, z0, x1, z1)
+
 // --- main loop --------------------------------------------------------------
 const timer = new Timer()
 const fps = { frames: 0, last: performance.now(), value: 0, ms: 0 }
 let idleFrames = 0
+let lastHere = 0
 // Exposed for tools/screenshot.mjs and for poking at things from the console.
-window.__nampa = { ready: false, camera, terrain: () => terrain, buildings, sky }
+window.__nampa = { ready: false, camera, terrain: () => terrain, buildings, streets, sky }
 
 function frame(timestamp) {
   timer.update(timestamp)
@@ -171,7 +180,7 @@ function frame(timestamp) {
   sky.setDate(date)
 
   if (mode === 'walk') walk.update(dt)
-  else drone.update()
+  else drone.update(dt)
 
   const below = groundHeightBelow(terrain, camera.position)
   const agl = below?.agl ?? 500
@@ -182,8 +191,16 @@ function frame(timestamp) {
   terrain.update(camera)
   buildings.update(camera.position, agl)
   sky.render(dt)
+  streets.update(camera, { mode, agl, width: innerWidth, height: innerHeight, occluded: occludedByBuildings })
+  ui.setHeading(cameraHeading(camera))
+  if (t0 - lastHere > 250) {
+    lastHere = t0
+    const walking = mode === 'walk'
+    const street = walking || agl < 1500 ? streets.nearest(walking ? camera.position : drone.controls.target, walking ? 40 : 60) : null
+    ui.setHere(street, walking ? 'On' : 'Near')
+  }
 
-  const busy = terrain.loading + terrain.needed.size + buildings.loading
+  const busy = terrain.loading + terrain.needed.size + buildings.loading + streets.loading
   idleFrames = busy === 0 && sky.ready ? idleFrames + 1 : 0
   window.__nampa.ready = idleFrames > 30
 
@@ -207,10 +224,12 @@ function frame(timestamp) {
       `sun elevation ${sky.sunElevation.toFixed(1)}°   exposure ${renderer.toneMappingExposure}`,
       `terrain tiles ${ts.visible} shown / ${ts.loaded} loaded / ${ts.loading} loading / ${ts.queued} queued / ${ts.failed} failed`,
       `buildings ${bs.buildings} in ${bs.tiles} tiles (${bs.loading} loading)`,
+      `street labels ${streets.shown ?? 0} shown, ${[...streets.tiles.values()].filter((t) => typeof t === 'object').length} tiles loaded`,
       `draw calls ${info.calls}   triangles ${(info.triangles / 1e6).toFixed(2)} M`,
       `sky ${sky.ready ? 'ready' : sky.error ? `error: ${sky.error}` : 'computing…'}`,
       terrain.lastError ? `last tile error: ${terrain.lastError}` : '',
-      buildings.lastError ? `last building error: ${buildings.lastError}` : ''
+      buildings.lastError ? `last building error: ${buildings.lastError}` : '',
+      streets.lastError ? `last street error: ${streets.lastError}` : ''
     ].filter(Boolean))
   }
   requestAnimationFrame(frame)

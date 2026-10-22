@@ -2,3 +2,4 @@ node_modules/
 /dist/
 /screenshots/
 data-prep/.cache/
+__pycache__/

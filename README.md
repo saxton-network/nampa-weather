@@ -16,7 +16,7 @@ overlay. That plan is parked; the camera overlay replaced it.
 |---|---|---|
 | Ground | Generated. Ground types are classified from USDA NAIP aerial photos (public domain) and corrected with Overture water, land use and land cover | `public/tiles/landcover/`: one ground type per pixel (lawn, trees, dry scrub, dirt, asphalt, concrete, water, crops, plowed field, sand, pool) at about 0.9 m (z17) over Nampa, 7 m across the Treasure Valley, 38 m out to the mountains. A shader paints each type with procedural detail that stays sharp up close. The photos themselves are not shipped |
 | Roads on the ground | Overture transportation (OpenStreetMap) | Every road, driveway, parking aisle, alley and path is painted into the ground at a width set by its type, with sidewalks, yellow centre lines and white edge and lane lines |
-| Trees | USGS 3DEP lidar (2018 Southern Idaho survey, public domain) | Each tree is a canopy peak found in the lidar point cloud, with its measured height and crown width; tall narrow crowns become conifers. Low-poly crowns on separate trunks in `public/data/trees/`. Drawn within about 1 km below 600 m altitude |
+| Trees | USGS 3DEP lidar (2018 Southern Idaho survey, public domain), with [Meta and WRI canopy height](https://registry.opendata.aws/dataforgood-fb-forests/) (CC BY 4.0) where there is no lidar yet | Each tree is a canopy peak found in the lidar point cloud, with its measured height and crown width; tall narrow crowns become conifers. The 2018 survey covers only southwest Nampa; downtown and the northeast use Meta's satellite-based canopy model for now, which is less exact, until the 2023 USGS survey of that area can be downloaded. Low-poly crowns on separate trunks in `public/data/trees/`. Drawn within about 1 km below 600 m altitude |
 | Terrain | [AWS Terrain Tiles](https://registry.opendata.aws/terrain-tiles/) (terrarium encoding, USGS 3DEP) | Snapshot saved in `public/tiles/elevation/`: about 3.5 m (z15) over Nampa, coarser beyond. Streamed as a quadtree with Earth curvature built in. Land with no cameras and few buildings is drawn a level or two coarser (except right around the viewer), and terrain past 40 km (25 km with `quality=low`) stays coarse, where haze hides detail anyway |
 | Buildings | [Overture Maps](https://overturemaps.org/) buildings, release 2026-10-21.0, refined near cameras from USGS lidar and NAIP photos | 77,803 buildings, pre-cut into 1 km tiles in `public/data/buildings/`, meshed in a Web Worker. Within a mile of a plate-reader camera, every building gets its roof colour from the aerial photo, and where lidar exists (southwest Nampa for now, 11,080 buildings) its footprint is lined up with the lidar, its eave and ridge heights are measured, and its roof is fitted: flat, gabled or hipped, with L- and T-shaped houses split into cross-gabled wings. Elsewhere houses get a guessed gable or hip roof |
 | Street names | Overture Maps transportation (from OpenStreetMap) | 12,070 named road segments in `public/data/roads/`. Labels follow the roads in drone mode, stand at sign height in walk mode, and are hidden when a building blocks the view |
@@ -104,6 +104,11 @@ standing on them. It writes
 `build_trees_lidar.py` streams the USGS 3DEP point cloud for the Nampa area
 (`ID_SouthernID_21_2018` in the public `usgs-lidar-public` bucket, about 800
 million points) and keeps the highest and lowest return per 0.9 m pixel. It
+also reads the newer `ID_SouthernGaps_D23` survey (2023, northeast Nampa) from
+the USGS download server, which wins where both exist; that server
+rate-limits heavily, so each tile is cached once fetched, and
+`LIDAR_2023_CACHED_ONLY=1` uses only the cached ones. Where neither survey has
+returns, Meta's canopy model stands in, for trees only. It
 subtracts the ground to get canopy height, masks building footprints, and finds
 tree tops as local height peaks; each crown's width comes from how far the
 canopy around the peak stays above half its height. It takes about an hour.
@@ -154,7 +159,7 @@ node tools/screenshot.mjs screenshots overview downtown street
 
 Ground generated from USDA NAIP via USGS The National Map (public domain) ·
 Terrain: USGS 3DEP via AWS Terrain Tiles ·
-Trees: USGS 3DEP lidar (public domain) ·
+Trees: USGS 3DEP lidar (public domain) and Meta / World Resources Institute canopy height (CC BY 4.0) ·
 Buildings © Overture Maps Foundation, © OpenStreetMap contributors, Microsoft, Esri Community Maps ·
 ALPR locations © OpenStreetMap contributors, mapped by the DeFlock community ·
 Atmosphere: takram three-geospatial (MIT).

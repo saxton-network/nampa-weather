@@ -27,8 +27,16 @@ Outputs
       uint8 height (0.2 m units), uint8 crown radius (0.1 m units),
       uint8 flags (1 = conifer), uint8 seed
   public/data/trees/index.json
-  data-prep/.cache/chm/17/<x>/<y>.png  canopy height per z17 tile (0.2 m units),
-      used by build_landcover.py to correct its ground types
+  data-prep/.cache/chm/17/<x>/<y>.png  lidar height above ground per z17 tile
+      (0.2 m units, roofs included), used by build_landcover.py and
+      building_detail.py
+  data-prep/.cache/chm-meta/17/<x>/<y>.png  the same with Meta's canopy model
+      filling in where there is no lidar, for build_landcover.py only
+
+Where neither survey has returns (for now: the 2023 tiles the USGS server
+hasn't let us download), trees come from Meta and WRI's 1 m global canopy
+height model (CC BY 4.0), which is less exact: whole-metre heights estimated
+from satellite photos of 2009-2020.
 
 Run: python3 -I data-prep/build_trees_lidar.py   (needs laspy, lazrs and pyproj)
 """
@@ -62,7 +70,8 @@ D23_INDEX = f"https://prd-tnm.s3.amazonaws.com/StagedProducts/Elevation/LPC/Proj
 D23_DATA = f"https://rockyweb.usgs.gov/vdelivery/Datasets/Staged/Elevation/LPC/Projects/{D23}/"
 D23_CACHE = os.path.join(CACHE_DIR, "lidar-2023")
 TREES = os.path.join(ROOT, "public", "data", "trees")
-CHM_DIR = os.path.join(CACHE_DIR, "chm")
+CHM_DIR = os.path.join(CACHE_DIR, "chm")  # lidar only (roofs included)
+META_CHM_DIR = os.path.join(CACHE_DIR, "chm-meta")  # lidar + Meta canopy, tiles lidar doesn't fully cover
 Z = 17
 N = 2 ** Z
 HALF = 20037508.342789244
@@ -337,47 +346,95 @@ def detect(chm, inner):
     return out
 
 
+def reduce_2018(t0):
+    """Per-pixel top and ground from the 2018 EPT, cached after the first run."""
+    cache = os.path.join(CACHE_DIR, "lidar-2018")
+    paths = [os.path.join(cache, f"{n}_{GX}_{GY}_{GW}_{GH}.npy") for n in ("top", "ground")]
+    if all(os.path.exists(p) for p in paths):
+        print("lidar 2018: cached", flush=True)
+        return np.load(paths[0]), np.load(paths[1])
+    nodes = ept_nodes()
+    total = sum(c for _, c in nodes)
+    print(f"lidar 2018: {len(nodes)} EPT nodes, {total / 1e6:.0f} M points ({time.time() - t0:.0f}s)", flush=True)
+    top = np.zeros((GH, GW), np.uint16)
+    ground = np.full((GH, GW), NO_GROUND, np.uint16)
+    done = 0
+    with ProcessPoolExecutor(4) as pool:
+        for k, res in enumerate(pool.map(reduce_node, [k for k, _ in nodes], chunksize=8), 1):
+            if res is not None:
+                x0, y0, t, g, n = res
+                h, w = t.shape
+                np.maximum(top[y0:y0 + h, x0:x0 + w], t, out=top[y0:y0 + h, x0:x0 + w])
+                np.minimum(ground[y0:y0 + h, x0:x0 + w], g, out=ground[y0:y0 + h, x0:x0 + w])
+                done += n
+            if k % 1000 == 0:
+                print(f"  {k}/{len(nodes)} nodes, {done / 1e6:.0f} M points ({time.time() - t0:.0f}s)", flush=True)
+    print(f"reduced {done / 1e6:.0f} M points ({time.time() - t0:.0f}s)", flush=True)
+    os.makedirs(cache, exist_ok=True)
+    np.save(paths[0], top)
+    np.save(paths[1], ground)
+    return top, ground
+
+
+class MetaCanopy:
+    """Meta / WRI 1 m global canopy height (CC BY 4.0), used for trees only
+    where neither lidar survey has returns. Its z9 GeoTIFFs are on the same
+    Web Mercator z17 pixel grid, in whole metres."""
+
+    URL = "https://dataforgood-fb-data.s3.amazonaws.com/forests/v1/alsgedi_global_v6_float/chm/{}.tif"
+
+    def __init__(self):
+        self.dir = os.path.join(CACHE_DIR, "meta-chm")
+        self.data = np.zeros((GH, GW), np.uint8)
+        Image.MAX_IMAGE_PIXELS = None
+        z9 = 2 ** 9
+        for ty in range(GY // 65536, (GY + GH - 1) // 65536 + 1):
+            for tx in range(GX // 65536, (GX + GW - 1) // 65536 + 1):
+                qk = "".join(str(((tx >> b) & 1) + 2 * ((ty >> b) & 1)) for b in range(8, -1, -1))
+                path = os.path.join(self.dir, f"{qk}.tif")
+                if not os.path.exists(path):
+                    os.makedirs(self.dir, exist_ok=True)
+                    with open(path, "wb") as f:
+                        f.write(fetch(self.URL.format(qk), timeout=900))
+                ax, ay = max(GX, tx * 65536), max(GY, ty * 65536)
+                bx, by = min(GX + GW, tx * 65536 + 65536), min(GY + GH, ty * 65536 + 65536)
+                im = Image.open(path).crop((ax - tx * 65536, ay - ty * 65536, bx - tx * 65536, by - ty * 65536))
+                self.data[ay - GY:by - GY, ax - GX:bx - GX] = np.asarray(im)
+        print(f"meta canopy: {(self.data > 3).mean() * 100:.1f}% of the grid above 3 m", flush=True)
+
+    def window(self, x0, y0, x1, y1):
+        # Whole-metre heights: blur a little so crowns have a single peak.
+        a = self.data[y0:y1, x0:x1].astype(np.float32)
+        return box_sum(a, 1) / 9
+
+
 def main():
     warnings.filterwarnings("ignore", category=RuntimeWarning)  # all-NaN blocks in fill_ground
     t0 = time.time()
     print(f"grid {GW}x{GH} px at z17 from ({GX}, {GY})", flush=True)
-    top = np.zeros((GH, GW), np.uint16)
-    ground = np.full((GH, GW), NO_GROUND, np.uint16)
-    done = 0
-
-    def add(res, skip=None):
-        nonlocal done
-        if res is None:
-            return
-        x0, y0, t, g, n = res
-        h, w = t.shape
-        if skip is not None:
-            # Pixels the newer survey already covers keep its returns only.
-            s = skip[y0:y0 + h, x0:x0 + w]
-            t, g = np.where(s, 0, t), np.where(s, NO_GROUND, g)
-        np.maximum(top[y0:y0 + h, x0:x0 + w], t, out=top[y0:y0 + h, x0:x0 + w])
-        np.minimum(ground[y0:y0 + h, x0:x0 + w], g, out=ground[y0:y0 + h, x0:x0 + w])
-        done += n
-
+    top, ground = reduce_2018(t0)
+    # The 2023 survey replaces the 2018 one wherever it has returns.
     tiles23 = d23_tiles() if os.environ.get("LIDAR_2023", "1") != "0" else []
-    print(f"lidar 2023: {len(tiles23)} tiles", flush=True)
+    have = [t for t in tiles23 if os.path.exists(os.path.join(D23_CACHE, f"{t[0]}.npz"))]
+    if os.environ.get("LIDAR_2023_CACHED_ONLY"):
+        tiles23 = have
+    print(f"lidar 2023: {len(tiles23)} tiles ({len(have)} cached)", flush=True)
+    top23 = np.zeros((GH, GW), np.uint16)
+    ground23 = np.full((GH, GW), NO_GROUND, np.uint16)
     with ProcessPoolExecutor(3) as pool:
         for k, res in enumerate(pool.map(reduce_laz, tiles23), 1):
-            add(res)
+            if res is not None:
+                x0, y0, t, g, n = res
+                h, w = t.shape
+                np.maximum(top23[y0:y0 + h, x0:x0 + w], t, out=top23[y0:y0 + h, x0:x0 + w])
+                np.minimum(ground23[y0:y0 + h, x0:x0 + w], g, out=ground23[y0:y0 + h, x0:x0 + w])
             if k % 10 == 0:
-                print(f"  {k}/{len(tiles23)} tiles, {done / 1e6:.0f} M points ({time.time() - t0:.0f}s)", flush=True)
-    newer = top > 0
-
-    nodes = ept_nodes()
-    total = sum(c for _, c in nodes)
-    print(f"lidar 2018: {len(nodes)} EPT nodes, {total / 1e6:.0f} M points ({time.time() - t0:.0f}s)", flush=True)
-    with ProcessPoolExecutor(4) as pool:
-        for k, res in enumerate(pool.map(reduce_node, [k for k, _ in nodes], chunksize=8), 1):
-            add(res, newer)
-            if k % 1000 == 0:
-                print(f"  {k}/{len(nodes)} nodes, {done / 1e6:.0f} M points ({time.time() - t0:.0f}s)", flush=True)
-    del newer
-    print(f"reduced {done / 1e6:.0f} M points ({time.time() - t0:.0f}s)", flush=True)
+                print(f"  {k}/{len(tiles23)} tiles ({time.time() - t0:.0f}s)", flush=True)
+    newer = top23 > 0
+    top[newer] = top23[newer]
+    ground[newer] = ground23[newer]
+    del top23, ground23, newer
+    meta = MetaCanopy()
 
     polys, bbx = load_buildings()
     print(f"buildings: {len(polys)} footprints", flush=True)
@@ -390,9 +447,16 @@ def main():
             g = ground[y0:y1, x0:x1].astype(np.float32)
             g[g == NO_GROUND] = np.nan
             if np.isnan(g).all():
-                continue
-            g = fill_ground(g)
-            chm = np.where(t > 0, (t - g) / 10, 0).clip(0, 50).astype(np.float32)
+                chm = np.zeros(t.shape, np.float32)
+            else:
+                g = fill_ground(g)
+                chm = np.where(t > 0, (t - g) / 10, 0).clip(0, 50).astype(np.float32)
+            # Lidar coverage in 8 px blocks; outside it, Meta's canopy model.
+            hb, wb = -(-t.shape[0] // 8), -(-t.shape[1] // 8)
+            cov = np.zeros((hb * 8, wb * 8), bool)
+            cov[:t.shape[0], :t.shape[1]] = t > 0
+            cov = cov.reshape(hb, 8, wb, 8).any(axis=(1, 3))
+            cov = np.repeat(np.repeat(cov, 8, 0), 8, 1)[:t.shape[0], :t.shape[1]]
             # Save canopy height per z17 tile for the ground classifier.
             for ty in range(cy, min(cy + CHUNK, GH), 256):
                 for tx in range(cx, min(cx + CHUNK, GW), 256):
@@ -402,6 +466,21 @@ def main():
                     path = os.path.join(CHM_DIR, "17", str((GX + tx) // 256), f"{(GY + ty) // 256}.png")
                     os.makedirs(os.path.dirname(path), exist_ok=True)
                     Image.fromarray(np.clip(tile * 5, 0, 255).astype(np.uint8), "L").save(path, optimize=True)
+            if not cov.all():
+                m = meta.window(x0, y0, x1, y1)
+                chm = np.where(cov, chm, m)
+                # Merged canopy (lidar, else Meta) for the ground classifier,
+                # for every z17 tile the lidar doesn't fully cover.
+                for ty in range(cy, min(cy + CHUNK, GH), 256):
+                    for tx in range(cx, min(cx + CHUNK, GW), 256):
+                        if cov[ty - y0: ty - y0 + 256, tx - x0: tx - x0 + 256].all():
+                            continue
+                        tile = chm[ty - y0: ty - y0 + 256, tx - x0: tx - x0 + 256]
+                        if tile.shape != (256, 256):
+                            continue
+                        path = os.path.join(META_CHM_DIR, "17", str((GX + tx) // 256), f"{(GY + ty) // 256}.png")
+                        os.makedirs(os.path.dirname(path), exist_ok=True)
+                        Image.fromarray(np.clip(tile * 5, 0, 255).astype(np.uint8), "L").save(path, optimize=True)
             bm = building_mask(polys, bbx, x0, y0, x1 - x0, y1 - y0)
             veg = np.where(bm, 0, chm)
             inner = np.zeros(veg.shape, bool)
@@ -436,7 +515,7 @@ def main():
                 f.write(struct.pack("<hhfBBBB", *r))
     with open(os.path.join(TREES, "index.json"), "w") as f:
         json.dump({
-            "source": "USGS 3DEP lidar ID_SouthernGaps_D23 (2023) and ID_SouthernID_21_2018 (public domain), building footprints from Overture Maps",
+            "source": "USGS 3DEP lidar ID_SouthernGaps_D23 (2023) and ID_SouthernID_21_2018 (public domain); where neither covers, Meta and WRI global canopy height (CC BY 4.0); building footprints from Overture Maps",
             "tileSize": size,
             "record": "int16 x_dm, int16 z_dm, float32 base_y, uint8 height (0.2 m), uint8 crown radius (0.1 m), uint8 flags (1 conifer), uint8 seed",
             "tiles": sorted([i, j, len(r)] for (i, j), r in tiles.items()),

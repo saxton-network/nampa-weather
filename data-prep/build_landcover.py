@@ -38,6 +38,7 @@ from common import (CACHE_DIR, OVERTURE_BUCKET, OVERTURE_RELEASE, REGION, ROOT,
 PHOTOS = os.environ.get("NAIP_TILES", os.path.join(CACHE_DIR, "naip-tiles"))
 OUT = os.path.join(ROOT, "public", "tiles", "landcover")
 CHM = os.path.join(CACHE_DIR, "chm", "17")  # lidar canopy height, 0.2 m units
+CHM_META = os.path.join(CACHE_DIR, "chm-meta", "17")  # lidar + Meta canopy where lidar has gaps
 
 UNKNOWN, LAWN, TREES_C, SCRUB, DIRT, ASPHALT, CONCRETE, WATER, CROP, PLOWED, SAND, POOL = range(12)
 NCLASS = 12
@@ -274,7 +275,9 @@ def canopy_share(z, x, y):
     found = False
     for dx in range(k):
         for dy in range(k):
-            path = os.path.join(CHM, str(x * k + dx), f"{y * k + dy}.png")
+            path = os.path.join(CHM_META, str(x * k + dx), f"{y * k + dy}.png")
+            if not os.path.exists(path):
+                path = os.path.join(CHM, str(x * k + dx), f"{y * k + dy}.png")
             if os.path.exists(path):
                 found = True
                 full[dy * 256:(dy + 1) * 256, dx * 256:(dx + 1) * 256] = np.asarray(Image.open(path)) > 12
@@ -338,7 +341,7 @@ def main():
     coverage = {
         "landcover": ranges,
         "elevation": {str(z): rng for z, rng, _ in tiers("elevation")},
-        "groundCredit": "Ground and trees generated from USDA NAIP and USGS 3DEP lidar (public domain) and Overture Maps / OpenStreetMap",
+        "groundCredit": "Ground and trees generated from USDA NAIP and USGS 3DEP lidar (public domain), Meta/WRI canopy height (CC BY 4.0) and Overture Maps / OpenStreetMap",
         "elevationCredit": "Terrain: USGS 3DEP via AWS Terrain Tiles",
     }
     with open(cov_path, "w") as f:

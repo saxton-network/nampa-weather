@@ -1,10 +1,13 @@
-# Builds the viewer and publishes dist/ to GitHub Pages on every push to main.
+# Builds the viewer and publishes dist/ to GitHub Pages on every push to main,
+# and daily so the plate-reader camera locations stay current.
 # One-time setup: repository Settings -> Pages -> Source: "GitHub Actions".
 name: Deploy to GitHub Pages
 
 on:
   push:
     branches: [main]
+  schedule:
+    - cron: '17 11 * * *' # 05:17 Mountain daylight time
   workflow_dispatch:
 
 permissions:
@@ -21,6 +24,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
+      # Fresh camera data for this build; on failure the committed snapshot is used.
+      - name: Refresh plate-reader camera locations
+        run: python3 data-prep/build_cameras.py || echo "::warning::Camera refresh failed; deploying the committed snapshot"
       - uses: actions/setup-node@v5
         with:
           node-version: 22

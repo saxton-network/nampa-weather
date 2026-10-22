@@ -161,7 +161,171 @@ input[type='range'] {
   display: none !important;
 }
 
+.count {
+  margin-left: auto;
+  font-variant-numeric: tabular-nums;
+}
+
+.legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  margin: 6px 0 0 22px;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.legend i {
+  display: inline-block;
+  width: 9px;
+  height: 9px;
+  margin-right: 4px;
+  border-radius: 50%;
+  vertical-align: -1px;
+}
+
+.pins {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  pointer-events: none !important;
+}
+
+.pin {
+  --pin: #ff5138;
+  position: absolute;
+  left: -11px;
+  top: -33px;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 2px solid rgba(255, 255, 255, 0.95);
+  border-radius: 50%;
+  background: var(--pin);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.6);
+  pointer-events: auto;
+  cursor: pointer;
+}
+
+/* Stem pointing down at the camera. */
+.pin::before {
+  content: '';
+  position: absolute;
+  left: 50%;
+  bottom: -11px;
+  margin-left: -5px;
+  border: 5px solid transparent;
+  border-top: 7px solid rgba(255, 255, 255, 0.95);
+}
+
+.pin::after {
+  content: '';
+  position: absolute;
+  inset: 5px;
+  border-radius: 50%;
+  background: rgba(0, 0, 0, 0.55);
+}
+
+.pin.selected {
+  border-color: #fff;
+  box-shadow: 0 0 0 3px var(--pin), 0 1px 6px rgba(0, 0, 0, 0.7);
+}
+
+.pin.cluster {
+  left: -14px;
+  top: -14px;
+  width: 28px;
+  height: 28px;
+  background: rgba(20, 24, 30, 0.88);
+  border-color: #ff5138;
+  color: #fff;
+  font: 700 12px system-ui, sans-serif;
+}
+
+.pin.cluster::before,
+.pin.cluster::after {
+  display: none;
+}
+
+.card {
+  position: absolute;
+  left: 12px;
+  top: 300px;
+  width: 280px;
+  max-width: calc(100vw - 24px);
+  padding: 12px 12px 10px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--panel-bg);
+  backdrop-filter: blur(6px);
+}
+
+.card-title {
+  font-weight: 650;
+  font-size: 14px;
+  padding-right: 24px;
+}
+
+.card-title::before {
+  content: '';
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  margin-right: 7px;
+  border-radius: 50%;
+  background: var(--dot);
+}
+
+.card-close {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  font-size: 18px;
+  line-height: 1;
+}
+
+.card dl {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 3px 10px;
+  margin: 8px 0;
+}
+
+.card dt {
+  color: var(--muted);
+}
+
+.card dd {
+  margin: 0;
+}
+
+.card-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.card-actions a {
+  color: var(--accent);
+  align-self: center;
+  margin-left: 2px;
+}
+
+.card-note {
+  margin-top: 8px;
+  font-size: 11px;
+  color: var(--muted);
+}
+
 @media (max-width: 600px) {
+  .card {
+    top: auto;
+    bottom: 110px;
+  }
+
   .panel {
     width: auto;
     right: 102px;

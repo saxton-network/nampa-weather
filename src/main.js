@@ -1,6 +1,7 @@
 import './style.css'
 import { PerspectiveCamera, Scene, Timer, Vector3, WebGLRenderer } from 'three'
 import { Buildings } from './buildings.js'
+import { BRANDS, Cameras, cardinal, describeCamera } from './cameras.js'
 import { DroneControls, WalkControls, cameraHeading, groundHeightBelow } from './controls.js'
 import { geodeticToLocal } from './geo.js'
 import region from './region.json'
@@ -64,6 +65,7 @@ let followNow = !params.get('t')
 const ui = new UI({
   presets: PRESETS,
   imagery: { options: IMAGERY_PROVIDERS, current: imageryKey },
+  legend: BRANDS.map((b) => ({ label: b.label.replace(' Solutions', ''), color: `#${b.color.toString(16).padStart(6, '0')}` })),
   onMode: setMode,
   onPreset: (k) => applyPreset(PRESETS[k]),
   onTime: (hours) => {
@@ -81,25 +83,89 @@ const ui = new UI({
     scene.remove(terrain.group)
     for (const r of terrain.roots) terrain.disposeTile(r)
     terrain = makeTerrain()
-    drone.terrain = walk.terrain = terrain
+    drone.terrain = walk.terrain = cameras.terrain = terrain
+    for (const c of cameras.list) c.placedZoom = Math.min(c.placedZoom, 0)
     scene.add(terrain.group)
     updateCredits()
   },
   onTouchMove: (dir) => (walk.touchMove = dir),
   onFaceNorth: () => (mode === 'walk' ? walk.faceNorth() : drone.faceNorth()),
-  onLabels: (on) => (streets.visible = on)
+  onLabels: (on) => (streets.visible = on),
+  onCameras: (on) => (cameras.visible = on)
 })
 const streets = new Streets(ui.root)
 if (params.get('labels') === '0') {
   streets.visible = false
   ui.labelsBox.checked = false
 }
+
+// --- plate-reader cameras ---------------------------------------------------
+const cameras = new Cameras(ui.root, terrain)
+scene.add(cameras.group)
+if (params.get('cameras') === '0') {
+  cameras.visible = false
+  ui.camerasBox.checked = false
+}
+
+const formatDistance = (m) => (m < 950 ? `${Math.round(m / 10) * 10} m` : `${(m / 1000).toFixed(1)} km`)
+
+function cameraPoint(cam) {
+  return cam.placedZoom >= 0 ? cam.position.clone() : groundPoint(cam.lat, cam.lon)
+}
+
+function flyToCamera(cam) {
+  if (mode === 'walk') setMode('drone')
+  const look = (cam.directions[0] ?? 0) + 140
+  drone.lookAt(cameraPoint(cam), { distance: 55, heading: look, pitch: -32 })
+  cameras.select(cam)
+}
+
+function standAtCamera(cam) {
+  setMode('walk', { at: cameraPoint(cam), heading: cam.directions[0] ?? 0 })
+  cameras.select(cam)
+}
+
+cameras.onSelect = (cam) => {
+  if (!cam) return ui.hideCard()
+  const info = describeCamera(cam)
+  const p = cameraPoint(cam)
+  const from = mode === 'walk' ? camera.position : drone.controls.target
+  const dx = p.x - from.x
+  const dz = p.z - from.z
+  const d = Math.hypot(dx, dz)
+  if (d > 15) info.rows.push(['Distance', `${formatDistance(d)} ${cardinal((Math.atan2(dx, -dz) * 180) / Math.PI)} of the view`])
+  if (cameras.meta?.generated) {
+    info.rows.push(['Data as of', new Date(cameras.meta.generated).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' })])
+  }
+  ui.showCard(info, [
+    ['Fly to', () => flyToCamera(cam)],
+    ['Look from here', () => standAtCamera(cam)],
+    ['OpenStreetMap', `https://www.openstreetmap.org/node/${cam.id}`, 'link']
+  ])
+}
+ui.onCardClose = () => cameras.select(null)
+cameras.onCluster = (hit) => {
+  if (mode === 'walk') setMode('drone')
+  const c = new Vector3()
+  for (const m of hit.members) c.add(cameraPoint(m))
+  c.divideScalar(hit.members.length)
+  const dist = Math.max(camera.position.distanceTo(drone.controls.target) / 3, 250)
+  const dir = new Vector3().subVectors(drone.controls.target, camera.position)
+  const heading = (Math.atan2(dir.x, -dir.z) * 180) / Math.PI
+  drone.lookAt(c, { distance: dist, heading, pitch: -45 })
+}
+cameras.ready.then(() => {
+  ui.setCameraCount(String(cameras.list.length))
+  const wanted = cameras.byId(params.get('camera'))
+  if (wanted) flyToCamera(wanted)
+})
 ui.setTime(date, localHours(date))
 
 const MAP_DATA_CREDIT = 'Streets and buildings © OpenStreetMap contributors, Overture Maps Foundation, Microsoft, Esri Community Maps'
+const CAMERA_CREDIT = 'ALPR locations © OpenStreetMap contributors via DeFlock'
 
 function updateCredits() {
-  ui.setCredits([IMAGERY_PROVIDERS[imageryKey].credit, TERRAIN_CREDIT, MAP_DATA_CREDIT])
+  ui.setCredits([IMAGERY_PROVIDERS[imageryKey].credit, TERRAIN_CREDIT, MAP_DATA_CREDIT, CAMERA_CREDIT])
 }
 updateCredits()
 
@@ -169,7 +235,7 @@ const fps = { frames: 0, last: performance.now(), value: 0, ms: 0 }
 let idleFrames = 0
 let lastHere = 0
 // Exposed for tools/screenshot.mjs and for poking at things from the console.
-window.__nampa = { ready: false, camera, terrain: () => terrain, buildings, streets, sky }
+window.__nampa = { ready: false, camera, terrain: () => terrain, buildings, streets, cameras, sky }
 
 function frame(timestamp) {
   timer.update(timestamp)
@@ -192,15 +258,23 @@ function frame(timestamp) {
   buildings.update(camera.position, agl)
   sky.render(dt)
   streets.update(camera, { mode, agl, width: innerWidth, height: innerHeight, occluded: occludedByBuildings })
+  cameras.update(camera, { mode, agl, width: innerWidth, height: innerHeight })
   ui.setHeading(cameraHeading(camera))
   if (t0 - lastHere > 250) {
     lastHere = t0
     const walking = mode === 'walk'
-    const street = walking || agl < 1500 ? streets.nearest(walking ? camera.position : drone.controls.target, walking ? 40 : 60) : null
-    ui.setHere(street, walking ? 'On' : 'Near')
+    const at = walking ? camera.position : drone.controls.target
+    const street = walking || agl < 1500 ? streets.nearest(at, walking ? 40 : 60) : null
+    const near = cameras.visible ? cameras.nearest(at) : null
+    const camText = !near || near.distance > 20000
+      ? null
+      : near.distance < 15
+        ? 'plate reader here'
+        : `nearest plate reader ${formatDistance(near.distance)} ${cardinal(near.bearing)}`
+    ui.setHere(street, walking ? 'On' : 'Near', camText)
   }
 
-  const busy = terrain.loading + terrain.needed.size + buildings.loading + streets.loading
+  const busy = terrain.loading + terrain.needed.size + buildings.loading + streets.loading + (cameras.visible ? cameras.pending : 0)
   idleFrames = busy === 0 && sky.ready ? idleFrames + 1 : 0
   window.__nampa.ready = idleFrames > 30
 
@@ -224,12 +298,14 @@ function frame(timestamp) {
       `sun elevation ${sky.sunElevation.toFixed(1)}°   exposure ${renderer.toneMappingExposure}`,
       `terrain tiles ${ts.visible} shown / ${ts.loaded} loaded / ${ts.loading} loading / ${ts.queued} queued / ${ts.failed} failed`,
       `buildings ${bs.buildings} in ${bs.tiles} tiles (${bs.loading} loading)`,
+      `cameras ${cameras.list.length} loaded, ${cameras.list.filter((c) => c.placedZoom >= 0).length} placed, ${cameras.shown ?? 0} pins`,
       `street labels ${streets.shown ?? 0} shown, ${[...streets.tiles.values()].filter((t) => typeof t === 'object').length} tiles loaded`,
       `draw calls ${info.calls}   triangles ${(info.triangles / 1e6).toFixed(2)} M`,
       `sky ${sky.ready ? 'ready' : sky.error ? `error: ${sky.error}` : 'computing…'}`,
       terrain.lastError ? `last tile error: ${terrain.lastError}` : '',
       buildings.lastError ? `last building error: ${buildings.lastError}` : '',
-      streets.lastError ? `last street error: ${streets.lastError}` : ''
+      streets.lastError ? `last street error: ${streets.lastError}` : '',
+      cameras.lastError ? `last camera error: ${cameras.lastError}` : ''
     ].filter(Boolean))
   }
   requestAnimationFrame(frame)

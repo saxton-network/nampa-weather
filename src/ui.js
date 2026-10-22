@@ -14,7 +14,7 @@ const el = (tag, attrs = {}, ...children) => {
 }
 
 export class UI {
-  constructor({ presets, imagery, onMode, onPreset, onTime, onNow, onImagery, onTouchMove, onFaceNorth, onLabels }) {
+  constructor({ presets, imagery, legend, onMode, onPreset, onTime, onNow, onImagery, onTouchMove, onFaceNorth, onLabels, onCameras }) {
     this.errors = []
     this.root = el('div', { class: 'ui' })
 
@@ -48,6 +48,13 @@ export class UI {
     this.debugToggle = el('button', { class: 'small', onclick: () => this.toggleDebug() }, 'Debug')
     this.labelsBox = el('input', { type: 'checkbox', checked: '', onchange: (e) => onLabels(e.target.checked) })
     this.onLabels = onLabels
+    this.camerasBox = el('input', { type: 'checkbox', checked: '', onchange: (e) => onCameras(e.target.checked) })
+    this.cameraCount = el('span', { class: 'count' })
+    const legendRow = el(
+      'div',
+      { class: 'legend' },
+      ...legend.map((b) => el('span', {}, el('i', { style: `background:${b.color}` }), b.label))
+    )
     this.panel = el(
       'div',
       { class: 'panel' },
@@ -57,7 +64,22 @@ export class UI {
       el('div', { class: 'row' }, this.timeLabel),
       el('div', { class: 'row' }, this.timeSlider, el('button', { class: 'small', onclick: onNow }, 'Now')),
       el('div', { class: 'row' }, imagerySelect, this.debugToggle),
-      el('label', { class: 'row check' }, this.labelsBox, 'Street names (L)')
+      el('label', { class: 'row check' }, this.labelsBox, 'Street names (L)'),
+      el('label', { class: 'row check' }, this.camerasBox, 'Plate-reader cameras (C)', this.cameraCount),
+      legendRow
+    )
+
+    this.cardTitle = el('div', { class: 'card-title' })
+    this.cardRows = el('dl')
+    this.cardActions = el('div', { class: 'card-actions' })
+    this.card = el(
+      'div',
+      { class: 'card', hidden: '' },
+      el('button', { class: 'card-close', 'aria-label': 'Close', onclick: () => this.onCardClose?.() }, '×'),
+      this.cardTitle,
+      this.cardRows,
+      this.cardActions,
+      el('div', { class: 'card-note' }, 'Crowd-sourced from OpenStreetMap via DeFlock. It may be incomplete or out of date.')
     )
 
     // Compass: the rose turns so N points north; the notch marks the view direction.
@@ -114,7 +136,7 @@ export class UI {
       el('button', { 'aria-label': 'Walk back', ...hold(-1) }, '▼')
     )
 
-    this.root.append(this.panel, this.here, this.compass, this.help, this.credits, this.debug, this.touchPad)
+    this.root.append(this.panel, this.here, this.compass, this.card, this.help, this.credits, this.debug, this.touchPad)
     document.body.append(this.root)
 
     window.addEventListener('error', (e) => this.error(e.message))
@@ -123,6 +145,11 @@ export class UI {
       if (e.target.closest?.('input,select,textarea')) return
       if (e.key === '`') this.toggleDebug()
       if (e.code === 'KeyN') onFaceNorth()
+      if (e.code === 'KeyC') {
+        this.camerasBox.checked = !this.camerasBox.checked
+        onCameras(this.camerasBox.checked)
+      }
+      if (e.code === 'Escape') this.onCardClose?.()
       if (e.code === 'KeyL') {
         this.labelsBox.checked = !this.labelsBox.checked
         onLabels(this.labelsBox.checked)
@@ -171,10 +198,34 @@ export class UI {
     this.headingText.textContent = `${names[Math.round(deg / 45) % 8]} ${Math.round(deg) % 360}°`
   }
 
-  // street: { short, distance } or null; prefix: 'On' or 'Near'.
-  setHere(street, prefix) {
-    this.here.hidden = !street
-    if (street) this.here.textContent = `${prefix} ${street.short}`
+  // street: { short } or null; prefix: 'On' or 'Near'; extra: optional suffix.
+  setHere(street, prefix, extra) {
+    const parts = [street ? `${prefix} ${street.short}` : null, extra].filter(Boolean)
+    this.here.hidden = !parts.length
+    this.here.textContent = parts.join('  ·  ')
+  }
+
+  setCameraCount(text) {
+    this.cameraCount.textContent = text
+  }
+
+  // info: { title, color, rows: [[label, value]] }; actions: [[label, fn] | [label, url, 'link']]
+  showCard(info, actions) {
+    this.cardTitle.textContent = info.title
+    this.cardTitle.style.setProperty('--dot', info.color)
+    this.cardRows.replaceChildren(...info.rows.flatMap(([k, val]) => [el('dt', {}, k), el('dd', {}, val)]))
+    this.cardActions.replaceChildren(
+      ...actions.map(([label, target, kind]) =>
+        kind === 'link'
+          ? el('a', { href: target, target: '_blank', rel: 'noopener' }, label)
+          : el('button', { onclick: target }, label)
+      )
+    )
+    this.card.hidden = false
+  }
+
+  hideCard() {
+    this.card.hidden = true
   }
 
   setCredits(lines) {

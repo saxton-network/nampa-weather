@@ -469,6 +469,11 @@ export class Terrain {
 
   // Geodetic height of the rendered ground, or null if nothing has loaded there.
   heightAt(lat, lon) {
+    return this.groundAt(lat, lon)?.height ?? null
+  }
+
+  // { height, zoom } from the most detailed loaded tile at (lat, lon), or null.
+  groundAt(lat, lon) {
     let tile = this.roots.find((r) => r.ready && r.contains(lat, lon))
     if (!tile) return null
     for (;;) {
@@ -476,6 +481,6 @@ export class Terrain {
       if (!next) break
       tile = next
     }
-    return tile.heightAt(lat, lon)
+    return { height: tile.heightAt(lat, lon), zoom: tile.z }
   }
 }

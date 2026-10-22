@@ -16,7 +16,7 @@ overlay. That plan is parked; the camera overlay replaced it.
 |---|---|---|
 | Ground | Generated. Ground types are classified from USDA NAIP aerial photos (public domain) and corrected with Overture water, land use and land cover | `public/tiles/landcover/`: one ground type per pixel (lawn, trees, dry scrub, dirt, asphalt, concrete, water, crops, plowed field, sand, pool) at about 0.9 m (z17) over Nampa, 7 m across the Treasure Valley, 38 m out to the mountains. A shader paints each type with procedural detail that stays sharp up close. The photos themselves are not shipped |
 | Roads on the ground | Overture transportation (OpenStreetMap) | Every road, driveway, parking aisle, alley and path is painted into the ground at a width set by its type, with sidewalks, yellow centre lines and white edge and lane lines |
-| Trees | Seeded wherever the photos show canopy | Low-poly round trees and conifers, about 8 m apart, kept off roads, buildings and water, in `public/data/trees/`. Drawn within about 1 km below 600 m altitude |
+| Trees | USGS 3DEP lidar (2018 Southern Idaho survey, public domain) | Each tree is a canopy peak found in the lidar point cloud, with its measured height and crown width; tall narrow crowns become conifers. Low-poly crowns on separate trunks in `public/data/trees/`. Drawn within about 1 km below 600 m altitude |
 | Terrain | [AWS Terrain Tiles](https://registry.opendata.aws/terrain-tiles/) (terrarium encoding, USGS 3DEP) | Snapshot saved in `public/tiles/elevation/`: about 3.5 m (z15) over Nampa, coarser beyond. Streamed as a quadtree with Earth curvature built in |
 | Buildings | [Overture Maps](https://overturemaps.org/) buildings, release 2026-10-21.0 | 77,803 buildings, pre-cut into 1 km tiles in `public/data/buildings/`, meshed in a Web Worker. Houses get gable or hip roofs |
 | Street names | Overture Maps transportation (from OpenStreetMap) | 12,070 named road segments in `public/data/roads/`. Labels follow the roads in drone mode, stand at sign height in walk mode, and are hidden when a building blocks the view |
@@ -24,12 +24,12 @@ overlay. That plan is parked; the camera overlay replaced it.
 | Facades | Generated from each building's Overture type and height | Walls get windows, doors and shopfronts from the building's type and height, drawn by a shader so they cost no geometry |
 | Shadows | Shadow map from the sun, or the moon at night | Buildings and trees cast shadows on the ground, walls and each other within a box around the view |
 | Sky and light | [`@takram/three-atmosphere`](https://github.com/takram-design-engineering/three-geospatial) and `src/night.js` | Frozen at Halloween night, 1:30 am on Nov 1 2026 (`snapshot.time` in `src/region.json`), after moonrise. The real 58%-lit waning gibbous moon, about 16° up in the east-northeast, lights the scene and casts the shadows; the moon disc shows its true phase, with stars, a cool night grade, lit windows and street lights |
-| Street lights | Generated along the street data | Lamp posts along residential and larger roads (every 36–55 m, alternating sides) with pools of light painted into the ground |
+| Street lights | Placed by rule from the street network | No public street-light map exists for Nampa, so lamps go where cities usually put them: a corner of every public intersection (both corners where an arterial crosses), the end of residential dead ends, and mid-block on long blocks (every 45–95 m by road type), only in built-up areas. Pools of light are painted into the ground |
 | Engine | three.js 0.186 + postprocessing | Logarithmic depth buffer, SMAA |
 
 **The scene is a frozen moment with its own look: Halloween night, lit by the moon.** Nothing photographic is
-shown: the ground, roads and trees are generated from what the aerial photos
-and map data say is there. Ground maps, terrain, buildings, streets and trees
+shown: the ground, roads and trees are generated from what the aerial photos,
+lidar and map data say is there. Ground maps, terrain, buildings, streets and trees
 are all saved in the site itself, and the lighting never changes, so a
 visitor's browser makes no requests to outside servers. Only the camera
 locations are refreshed, at build time.
@@ -78,8 +78,12 @@ python3 -I data-prep/build_buildings.py   # public/data/buildings/
 python3 -I data-prep/build_roads.py       # public/data/roads/
 python3 -I data-prep/build_cameras.py     # public/data/cameras.json
 python3 -I data-prep/build_snapshot.py    # elevation + NAIP photos (photos stay in data-prep/.cache)
-python3 -I data-prep/build_landcover.py   # public/tiles/landcover/, public/data/trees/, coverage.json
+python3 -I data-prep/build_trees_lidar.py # public/data/trees/ (+ canopy heights in data-prep/.cache)
+python3 -I data-prep/build_landcover.py   # public/tiles/landcover/, coverage.json
 ```
+
+The scripts need `pip install numpy pillow pyarrow`; the lidar step also needs
+`pip install laspy lazrs`.
 
 `build_snapshot.py` exports NAIP from the USGS image service in blocks of up
 to 3,840 px (splitting a block when the service times out) and cuts them into
@@ -92,8 +96,18 @@ take an hour when the USGS service is busy, and can be restarted where it stoppe
 local texture, using Overture land cover to tell town from fields and natural
 ground, burns in Overture water, canals, pools, farmland and golf features,
 fills shadows from their surroundings, and clears photographed asphalt along
-roads the viewer paints itself. It also seeds the trees. It writes
+roads the viewer paints itself. Where lidar canopy heights are cached, it marks
+green ground under real canopy as trees and clears "trees" with nothing
+standing on them. It writes
 `public/tiles/coverage.json`, which tells the viewer which tiles exist.
+
+`build_trees_lidar.py` streams the USGS 3DEP point cloud for the Nampa area
+(`ID_SouthernID_21_2018` in the public `usgs-lidar-public` bucket, about 800
+million points) and keeps the highest and lowest return per 0.9 m pixel. It
+subtracts the ground to get canopy height, masks building footprints, and finds
+tree tops as local height peaks; each crown's width comes from how far the
+canopy around the peak stays above half its height. It takes about an hour.
+Run it before `build_landcover.py`, which uses its cached canopy heights.
 
 `build_cameras.py` uses only the standard library. It reads the nationwide feed
 behind [DeFlock's map](https://maps.deflock.org) (built from OpenStreetMap) and
@@ -130,6 +144,7 @@ node tools/screenshot.mjs screenshots overview downtown street
 
 Ground generated from USDA NAIP via USGS The National Map (public domain) ·
 Terrain: USGS 3DEP via AWS Terrain Tiles ·
+Trees: USGS 3DEP lidar (public domain) ·
 Buildings © Overture Maps Foundation, © OpenStreetMap contributors, Microsoft, Esri Community Maps ·
 ALPR locations © OpenStreetMap contributors, mapped by the DeFlock community ·
 Atmosphere: takram three-geospatial (MIT).

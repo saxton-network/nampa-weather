@@ -17,12 +17,12 @@ const BASE = import.meta.env.BASE_URL
 const KIND = [
   { name: 'motorway', w: 11.5, lines: 'motorway' },
   { name: 'trunk', w: 11.5, lines: 'motorway' },
-  { name: 'primary', w: 14, walk: true, lines: 'double', lamps: 36 },
-  { name: 'secondary', w: 12, walk: true, lines: 'double', lamps: 38 },
-  { name: 'tertiary', w: 10, walk: true, lines: 'dashed', lamps: 42 },
-  { name: 'residential', w: 8.5, walk: true, lamps: 55 },
+  { name: 'primary', w: 14, walk: true, lines: 'double' },
+  { name: 'secondary', w: 12, walk: true, lines: 'double' },
+  { name: 'tertiary', w: 10, walk: true, lines: 'dashed' },
+  { name: 'residential', w: 8.5, walk: true },
   { name: 'unclassified', w: 7 },
-  { name: 'living_street', w: 6, walk: true, lamps: 45 },
+  { name: 'living_street', w: 6, walk: true },
   { name: 'service', w: 5 },
   { name: 'driveway', w: 3.5 },
   { name: 'parking_aisle', w: 6.5 },
@@ -138,39 +138,16 @@ function addPath(ctx, pts) {
   for (let k = 1; k < pts.length; k++) ctx.lineTo(pts[k][0], pts[k][1])
 }
 
-// Street lights along a road tile's segments: [x, z, side_x, side_z] in local
-// metres (side = unit vector from the lamp toward the road). Generated from
-// the segment geometry, so the ground glow and the lamp posts always agree.
+// Street lights for a road tile: [x, z, toward_road_x, toward_road_z] in local
+// metres, placed by data-prep/build_roads.py at intersections, dead ends and
+// along long blocks. Shared by the ground glow and the lamp posts.
 export function lampsFor(tile) {
-  if (tile.lamps) return tile.lamps
-  const out = []
-  for (const s of tile.segs) {
-    const k = KIND[s[2]]
-    if (!k?.lamps) continue
-    const pts = points(tile, s)
-    let run = 0
-    let next = k.lamps / 2
-    let n = 0
-    for (let i = 1; i < pts.length; i++) {
-      const [x0, z0] = pts[i - 1]
-      const [x1, z1] = pts[i]
-      const len = Math.hypot(x1 - x0, z1 - z0)
-      if (len < 1e-3) continue
-      const dx = (x1 - x0) / len
-      const dz = (z1 - z0) / len
-      while (next <= run + len) {
-        const t = next - run
-        const side = n++ % 2 ? 1 : -1
-        const off = k.w / 2 + 1.0
-        // Right-hand normal is (-dz, dx); lamps alternate sides of the road.
-        out.push([x0 + dx * t - dz * off * side, z0 + dz * t + dx * off * side, dz * side, -dx * side])
-        next += k.lamps
-      }
-      run += len
-    }
+  if (!tile.lampsLocal) {
+    const ox = tile.i * tile.size
+    const oz = tile.j * tile.size
+    tile.lampsLocal = (tile.lamps ?? []).map(([x, z, dx, dz]) => [ox + x / 10, oz + z / 10, dx / 100, dz / 100])
   }
-  tile.lamps = out
-  return out
+  return tile.lampsLocal
 }
 
 // Paints all roads from `tiles` onto ctx. `toCanvas` is the affine

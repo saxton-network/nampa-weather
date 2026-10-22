@@ -1,5 +1,6 @@
-// Low-poly 3D trees seeded wherever the aerial photos show canopy
-// (data-prep/build_landcover.py). One instanced mesh per 1 km tile per shape,
+// Low-poly 3D trees at the tree tops found in the 2018 USGS lidar survey
+// (data-prep/build_trees_lidar.py), each with its measured height and crown
+// radius, as a round broadleaf or a conifer. One instanced mesh per 1 km tile per shape,
 // loaded only near the camera and only from low altitude.
 
 import {
@@ -15,11 +16,11 @@ import {
   Quaternion,
   Vector3
 } from 'three'
-import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js'
 import { receiveShadows } from './shadows.js'
 
 const BASE = import.meta.env.BASE_URL
-const RECORD = 10 // bytes: int16 x_dm, int16 z_dm, float32 base_y, uint8 height_dm/2, uint8 seed
+// bytes: int16 x_dm, int16 z_dm, float32 base_y, uint8 height (0.2 m), uint8 crown radius (0.1 m), uint8 flags, uint8 seed
+const RECORD = 12
 const MAX_AGL = 600 // m; above this the trees are too small to matter
 const RANGE = 1100 // m
 
@@ -35,11 +36,12 @@ function colored(geometry, hex) {
   return g
 }
 
-// Unit-height shapes: trunk from just below ground up to the canopy.
-const trunk = () => colored(new CylinderGeometry(0.035, 0.05, 0.42, 5).translate(0, 0.16, 0), 0x5b4532)
-const SHAPES = [
-  mergeGeometries([trunk(), colored(new IcosahedronGeometry(0.34, 0).scale(1, 0.88, 1).translate(0, 0.64, 0), 0x3d6b2c)]),
-  mergeGeometries([trunk(), colored(new ConeGeometry(0.26, 0.78, 7).translate(0, 0.6, 0), 0x2e5227)])
+// Unit parts, each scaled per tree: a trunk (radius 1, height 1, base at 0),
+// a round crown (radius 1, centred) and a conifer cone (radius 1, height 1).
+const TRUNK = colored(new CylinderGeometry(0.75, 1, 1, 5).translate(0, 0.5, 0), 0x5b4532)
+const CROWNS = [
+  colored(new IcosahedronGeometry(1, 0), 0x3d6b2c),
+  colored(new ConeGeometry(1, 1, 7).translate(0, 0.5, 0), 0x2e5227)
 ]
 
 const m = new Matrix4()
@@ -83,28 +85,53 @@ export class Trees {
       const [i, j] = key.split('_').map(Number)
       const size = this.index.tileSize
       const n = view.byteLength / RECORD
-      const shapeOf = (seed) => (seed % 7 === 0 ? 1 : 0) // about one conifer in seven
+      const shapeOf = (k) => view.getUint8(k * RECORD + 10) & 1 // conifer flag
       const counts = [0, 0]
-      for (let k = 0; k < n; k++) counts[shapeOf(view.getUint8(k * RECORD + 9))]++
-      const meshes = SHAPES.map((g, shape) => {
-        const mesh = new InstancedMesh(g, this.material, Math.max(counts[shape], 1))
+      for (let k = 0; k < n; k++) counts[shapeOf(k)]++
+      const make = (g, count, name) => {
+        const mesh = new InstancedMesh(g, this.material, Math.max(count, 1))
         mesh.count = 0
-        mesh.name = `trees ${key} ${shape}`
+        mesh.name = `trees ${key} ${name}`
         return mesh
-      })
+      }
+      const crowns = CROWNS.map((g, shape) => make(g, counts[shape], shape ? 'conifers' : 'crowns'))
+      const trunks = make(TRUNK, n, 'trunks')
+      const meshes = [...crowns, trunks]
       for (let k = 0; k < n; k++) {
         const o = k * RECORD
-        const seed = view.getUint8(o + 9)
-        const mesh = meshes[shapeOf(seed)]
+        const seed = view.getUint8(o + 11)
+        const conifer = shapeOf(k)
         const h = view.getUint8(o + 8) / 5
-        const wide = 0.8 + ((seed * 37) % 100) / 250
-        p.set(i * size + view.getInt16(o, true) / 10, view.getFloat32(o + 4, true), j * size + view.getInt16(o + 2, true) / 10)
+        const r = view.getUint8(o + 9) / 10
+        const x = i * size + view.getInt16(o, true) / 10
+        const y = view.getFloat32(o + 4, true)
+        const z = j * size + view.getInt16(o + 2, true) / 10
         q.setFromAxisAngle(Y, (seed / 256) * Math.PI * 2)
-        s.set(h * wide, h, h * wide)
-        mesh.setMatrixAt(mesh.count, m.compose(p, q, s))
         tint.setRGB(0.85 + (seed % 5) * 0.06, 0.9 + (seed % 3) * 0.07, 0.85 + (seed % 4) * 0.05)
-        mesh.setColorAt(mesh.count, tint)
-        mesh.count++
+        // Crown: a round tree's crown is about as tall as it is wide (but at
+        // most half the tree); a conifer's cone takes most of its height.
+        const crowns_ = crowns[conifer]
+        let trunkTop
+        if (conifer) {
+          p.set(x, y + h * 0.18, z)
+          s.set(r, h * 0.82, r)
+          trunkTop = h * 0.3
+        } else {
+          const ry = Math.min(r * 0.95, h * 0.45)
+          p.set(x, y + h - ry, z)
+          s.set(r, ry, r)
+          trunkTop = h - ry * 1.4
+        }
+        crowns_.setMatrixAt(crowns_.count, m.compose(p, q, s))
+        crowns_.setColorAt(crowns_.count, tint)
+        crowns_.count++
+        // Trunk from just below the ground into the crown, thicker for bigger trees.
+        const tr = Math.min(Math.max(0.05 + r * 0.045, 0.07), 0.35)
+        p.set(x, y - 0.3, z)
+        s.set(tr, Math.max(trunkTop, 0.8) + 0.3, tr)
+        trunks.setMatrixAt(trunks.count, m.compose(p, q, s))
+        trunks.setColorAt(trunks.count, tint)
+        trunks.count++
       }
       for (const mesh of meshes) {
         if (!mesh.count) continue

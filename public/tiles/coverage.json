@@ -99,6 +99,6 @@
    11979
   ]
  },
- "groundCredit": "Ground generated from USDA NAIP (public domain) and Overture Maps / OpenStreetMap",
+ "groundCredit": "Ground and trees generated from USDA NAIP and USGS 3DEP lidar (public domain) and Overture Maps / OpenStreetMap",
  "elevationCredit": "Terrain: USGS 3DEP via AWS Terrain Tiles"
 }

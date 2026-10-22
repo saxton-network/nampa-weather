@@ -9,18 +9,18 @@ filter removes speckle. The result is one 8-bit PNG per tile in
 public/tiles/landcover/ (values are the class ids below); the photos themselves
 stay in data-prep/.cache/ and are not shipped.
 
-It also places trees: wherever the z17 maps show canopy, a tree is seeded on a
-jittered grid. Trees go to public/data/trees/<i>_<j>.bin, one file per 1 km tile
-of the building grid: little-endian records of
-  int16 x_dm, int16 z_dm (from the tile origin), float32 base_y, uint8 height_dm/2, uint8 seed
+Where the lidar canopy heights from build_trees_lidar.py are cached, they
+correct the tree class: green ground under real canopy becomes trees, and
+"trees" with nothing standing on them become lawn. (Trees themselves are
+placed by build_trees_lidar.py.)
 
-Run: python3 -I data-prep/build_landcover.py   (after build_snapshot.py)
+Run: python3 -I data-prep/build_landcover.py   (after build_snapshot.py, and
+     after build_trees_lidar.py for the canopy correction)
 """
 
 import json
 import math
 import os
-import struct
 import sys
 import time
 from concurrent.futures import ProcessPoolExecutor
@@ -32,17 +32,17 @@ import pyarrow.fs as pafs
 from PIL import Image, ImageDraw
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from common import (CACHE_DIR, ELEV_ZOOM, OVERTURE_BUCKET, OVERTURE_RELEASE, REGION, ROOT, Elevation,
-                    parse_wkb, parse_wkb_lines, to_local)
+from common import (CACHE_DIR, OVERTURE_BUCKET, OVERTURE_RELEASE, REGION, ROOT,
+                    parse_wkb, parse_wkb_lines)
 
 PHOTOS = os.environ.get("NAIP_TILES", os.path.join(CACHE_DIR, "naip-tiles"))
 OUT = os.path.join(ROOT, "public", "tiles", "landcover")
-TREES = os.path.join(ROOT, "public", "data", "trees")
+CHM = os.path.join(CACHE_DIR, "chm", "17")  # lidar canopy height, 0.2 m units
 
 UNKNOWN, LAWN, TREES_C, SCRUB, DIRT, ASPHALT, CONCRETE, WATER, CROP, PLOWED, SAND, POOL = range(12)
 NCLASS = 12
 ROADS = 100  # burn-only marker: corridors the viewer paints roads into
-NO_TREES = 101  # burn-only marker: building footprints (no tree trunks here)
+NO_TREES = 101  # burn-only marker: building footprints (never canopy)
 SHADOW = 255  # temporary marker for pixels too dark to classify
 
 # Road corridor widths (m) by Overture class: the drawn road plus some margin.
@@ -228,8 +228,8 @@ def burn(cls, veg, z, x, y, items, bb):
     layers = {}
     for k in hit:
         c, kind, pts, width = items[k]
-        if c == NO_TREES and z < 17:
-            continue  # only used for seeding trees on z17 tiles
+        if c == NO_TREES and z < 15:
+            continue  # only used to mask the canopy correction close up
         img = layers.get(c)
         if img is None:
             img = layers[c] = Image.new("L", (256, 256), 0)
@@ -267,6 +267,32 @@ def burn(cls, veg, z, x, y, items, bb):
 _items = _bb = _priors = _pbb = None
 
 
+def canopy_share(z, x, y):
+    """Share of each pixel covered by >2.5 m lidar canopy, or None without lidar."""
+    k = 2 ** (17 - z)
+    full = np.zeros((256 * k, 256 * k), np.float32)
+    found = False
+    for dx in range(k):
+        for dy in range(k):
+            path = os.path.join(CHM, str(x * k + dx), f"{y * k + dy}.png")
+            if os.path.exists(path):
+                found = True
+                full[dy * 256:(dy + 1) * 256, dx * 256:(dx + 1) * 256] = np.asarray(Image.open(path)) > 12
+    if not found:
+        return None
+    share = full.reshape(256, k, 256, k).mean(axis=(1, 3))
+    return box(share, 1)
+
+
+def apply_canopy(cls, nogo, z, x, y):
+    share = canopy_share(z, x, y)
+    if share is None:
+        return cls
+    green = np.isin(cls, (LAWN, SCRUB, CROP, UNKNOWN, DIRT))
+    cls = np.where((cls == TREES_C) & (share < 0.15), LAWN, cls)
+    return np.where(green & (share > 0.5) & ~nogo, TREES_C, cls)
+
+
 def init(items, bb, priors, pbb):
     global _items, _bb, _priors, _pbb
     _items, _bb, _priors, _pbb = items, bb, priors, pbb
@@ -283,53 +309,12 @@ def process(job):
     cls, nogo = burn(cls, veg, z, x, y, _items, _bb)
     cls = fill_shadows(cls)
     if z >= 15:
+        cls = apply_canopy(cls, nogo, z, x, y)
         cls = majority(cls)
     cls = cls.astype(np.uint8)
     os.makedirs(os.path.dirname(dst), exist_ok=True)
     Image.fromarray(cls, "L").save(dst, optimize=True)
-    if z != 17:
-        return None
-    # Seed trees on a ~8 m jittered grid wherever most of the cell is canopy,
-    # but never on roads, in buildings or in water.
-    trees = []
-    cell = 9
-    canopy = (cls == TREES_C).astype(np.float32)
-    share = box(canopy, 4)
-    rng = np.random.default_rng(z * 1_000_003 + x * 7919 + y)
-    for cy in range(0, 256, cell):
-        for cx in range(0, 256, cell):
-            if canopy[cy:cy + cell, cx:cx + cell].mean() < 0.5:
-                continue
-            jx, jy = rng.uniform(0, cell, 2)
-            px, py = min(int(cx + jx), 255), min(int(cy + jy), 255)
-            if nogo[py, px]:
-                continue
-            trees.append((x + (cx + jx) / 256, y + (cy + jy) / 256, float(share[py, px])))
-    return trees
-
-
-def tree_records(points, elev):
-    """Group (tile_x17, tile_y17, canopy_share) points into 1 km local tiles."""
-    size = REGION["buildingTileSize"]
-    n = 2 ** 17
-    tx = np.array([p[0] for p in points])
-    ty = np.array([p[1] for p in points])
-    share = np.array([p[2] for p in points])
-    lon = tx / n * 360 - 180
-    lat = np.degrees(np.arctan(np.sinh(np.pi * (1 - 2 * ty / n))))
-    h = np.array([elev.sample(a, b) for a, b in zip(lat, lon)])
-    x, yloc, z = to_local(lat, lon, h)
-    rng = np.random.default_rng(17)
-    # Bigger canopies grow taller trees: 5-9 m in sparse yards, up to 16 m in groves.
-    height = 5 + share * 7 + rng.uniform(0, 3, len(x))
-    tiles = {}
-    for k in range(len(x)):
-        i, j = math.floor(x[k] / size), math.floor(z[k] / size)
-        tiles.setdefault((i, j), []).append((
-            round((x[k] - i * size) * 10), round((z[k] - j * size) * 10), float(yloc[k]),
-            min(255, round(height[k] * 5)), int(rng.integers(0, 256)),
-        ))
-    return tiles
+    return True
 
 
 def main():
@@ -340,41 +325,25 @@ def main():
     jobs = [(int(z), x, y) for z, (x0, x1, y0, y1) in ranges.items() for x in range(x0, x1 + 1) for y in range(y0, y1 + 1)]
     items, bb, priors, pbb = load_vectors()
     print(f"landcover: {len(jobs)} tiles, {len(items)} map features, {len(priors)} land-cover hints ({time.time() - t0:.0f}s)", flush=True)
-    points = []
     missing = 0
     with ProcessPoolExecutor(4, initializer=init, initargs=(items, bb, priors, pbb)) as pool:
         for k, res in enumerate(pool.map(process, jobs, chunksize=32), 1):
             if res is None and not os.path.exists(os.path.join(OUT, str(jobs[k - 1][0]), str(jobs[k - 1][1]), f"{jobs[k - 1][2]}.png")):
                 missing += 1
-            if res:
-                points.extend(res)
             if k % 2000 == 0:
                 print(f"  {k}/{len(jobs)} ({time.time() - t0:.0f}s)", flush=True)
     if missing:
         print(f"warning: {missing} tiles had no photo to classify", flush=True)
 
-    elev = Elevation(REGION["buildingBbox"], ELEV_ZOOM)
-    tiles = tree_records(points, elev)
-    os.makedirs(TREES, exist_ok=True)
-    for f in os.listdir(TREES):
-        os.remove(os.path.join(TREES, f))
-    for (i, j), recs in tiles.items():
-        with open(os.path.join(TREES, f"{i}_{j}.bin"), "wb") as f:
-            for r in recs:
-                f.write(struct.pack("<hhfBB", *r))
-    with open(os.path.join(TREES, "index.json"), "w") as f:
-        json.dump({"tileSize": REGION["buildingTileSize"], "record": "int16 x_dm, int16 z_dm, float32 base_y, uint8 height_dm/2, uint8 seed",
-                   "tiles": sorted([i, j, len(r)] for (i, j), r in tiles.items())}, f, separators=(",", ":"))
-
     coverage = {
         "landcover": ranges,
         "elevation": {str(z): rng for z, rng, _ in tiers("elevation")},
-        "groundCredit": "Ground generated from USDA NAIP (public domain) and Overture Maps / OpenStreetMap",
+        "groundCredit": "Ground and trees generated from USDA NAIP and USGS 3DEP lidar (public domain) and Overture Maps / OpenStreetMap",
         "elevationCredit": "Terrain: USGS 3DEP via AWS Terrain Tiles",
     }
     with open(cov_path, "w") as f:
         json.dump(coverage, f, indent=1)
-    print(f"done: {len(jobs)} ground tiles, {len(points)} trees in {len(tiles)} tiles ({time.time() - t0:.0f}s)")
+    print(f"done: {len(jobs)} ground tiles ({time.time() - t0:.0f}s)")
 
 
 if __name__ == "__main__":

@@ -16,7 +16,8 @@ pixel grid (about 0.87 m, the same grid as the ground-type tiles):
   height top - ground, with building footprints (Overture, +2 px) removed
 
 Tree tops are local maxima of that height (window grows with height), kept
-only where enough canopy surrounds them, which drops power lines and poles.
+only where enough canopy surrounds them and the canopy is at least ~2.6 m
+across, which drops power lines and poles.
 Each tree gets its measured height, a crown radius measured from the canopy
 (capped by the distance to its neighbours), and a conifer flag for tall,
 narrow crowns.
@@ -299,10 +300,14 @@ def building_mask(polys, bbx, x0, y0, w, h):
 
 def detect(chm, inner):
     """Tree tops in a height raster: (row, col, height, crown_radius_px)."""
-    support = box_sum((chm > 2.0).astype(np.float32), 2)
+    canopy = (chm > 2.0).astype(np.float32)
+    support = box_sum(canopy, 2)
+    # Opening with a 3x3 square: wires and poles (1-2 px wide) vanish, crowns
+    # at least ~2.6 m across stay.
+    solid = max_filter(1 - max_filter(1 - canopy, 1), 1) > 0.5
     m2, m3, m4 = max_filter(chm, 2), max_filter(chm, 3), max_filter(chm, 4)
     peak = np.where(chm < 6, chm >= m2, np.where(chm < 12, chm >= m3, chm >= m4))
-    cand = peak & (chm >= 3.0) & (support >= 10) & inner
+    cand = peak & (chm >= 3.0) & (support >= 10) & solid & inner
     ys, xs = np.nonzero(cand)
     hs = chm[ys, xs]
     order = np.argsort(-hs)

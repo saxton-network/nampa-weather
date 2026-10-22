@@ -47,7 +47,8 @@ const roads = new RoadTiles()
 const terrain = new Terrain(renderer, {
   roads,
   sseThreshold: lowQuality ? 1.6 : 1.0,
-  maxTiles: lowQuality ? 350 : 700
+  maxTiles: lowQuality ? 350 : 700,
+  farDistance: lowQuality ? 25000 : 40000
 })
 scene.add(terrain.group)
 const buildings = new Buildings()
@@ -146,7 +147,18 @@ cameras.onCluster = (hit) => {
   const heading = (Math.atan2(dir.x, -dir.z) * 180) / Math.PI
   drone.lookAt(c, { distance: dist, heading, pitch: -45 })
 }
+// Full terrain detail only where there is something to see: built-up 1 km
+// cells (scattered farmsteads don't count) and around every camera.
+buildings.ready.then(() => {
+  const size = buildings.index?.tileSize ?? 1000
+  const built = (buildings.index?.tiles ?? []).filter(([, , n]) => n >= 25)
+  terrain.setDetailAreas(built.map(([i, j]) => [(i + 0.5) * size, (j + 0.5) * size]), 0)
+})
 cameras.ready.then(() => {
+  terrain.setDetailAreas(cameras.list.map((c) => {
+    const p = geodeticToLocal(c.lat, c.lon, 0, new Vector3())
+    return [p.x, p.z]
+  }))
   ui.setCameraCount(String(cameras.list.length))
   const wanted = cameras.byId(params.get('camera'))
   if (wanted) flyToCamera(wanted)

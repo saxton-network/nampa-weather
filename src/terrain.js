@@ -208,8 +208,13 @@ class Tile {
   }
 }
 
+const DETAIL_CELL = 1000 // m
+const SPARSE_FROM_ZOOM = 12
+const SPARSE_FACTOR = 3
+const SPARSE_NEAR = 300 // m: always full detail this close to the camera
+
 export class Terrain {
-  constructor(renderer, { roads = null, sseThreshold = 1.0, maxTiles = 700, maxConcurrent = 8 } = {}) {
+  constructor(renderer, { roads = null, sseThreshold = 1.0, maxTiles = 700, maxConcurrent = 8, farDistance = 40000 } = {}) {
     this.renderer = renderer
     this.roads = roads
     this.classTextures = new Map() // "z/x/y" -> { promise, texture, refs }
@@ -230,6 +235,14 @@ export class Terrain {
         this.lastError = `coverage: ${err.message}`
       })
     this.maxElevationZoom = region.terrain.maxElevationZoom
+    // Render savings: terrain with nothing on it (no buildings or cameras)
+    // refines less, and distant terrain stops at a coarse zoom where haze
+    // hides detail anyway. Skirts keep neighbouring tiles of different zooms
+    // joined, so the ground stays continuous.
+    this.detailCells = null // Set of "i_j" 1 km cells (local frame) worth full detail
+    this.detailVersion = 0
+    this.farDistance = farDistance
+    this.farZoom = region.terrain.farZoom ?? 11
     this.sseThreshold = sseThreshold
     this.maxTiles = maxTiles
     this.maxConcurrent = maxConcurrent
@@ -464,6 +477,38 @@ export class Terrain {
     if (tile.children) for (const c of tile.children) this.hide(c)
   }
 
+  // Marks where full detail is worth it: [x, z] points in the local frame,
+  // each covering the 1 km cell it falls in and any cell within `pad` metres.
+  setDetailAreas(points, pad = 400) {
+    const cells = this.detailCells ?? new Set()
+    for (const [x, z] of points) {
+      for (let i = Math.floor((x - pad) / DETAIL_CELL); i <= Math.floor((x + pad) / DETAIL_CELL); i++) {
+        for (let j = Math.floor((z - pad) / DETAIL_CELL); j <= Math.floor((z + pad) / DETAIL_CELL); j++) cells.add(`${i}_${j}`)
+      }
+    }
+    this.detailCells = cells
+    this.detailVersion++
+  }
+
+  // True if the tile overlaps a detail cell (cached per tile).
+  hasDetail(tile) {
+    if (!this.detailCells) return true
+    if (tile.detailVersion !== this.detailVersion) {
+      const { center: c, radius: r } = tile.sphere
+      tile.detail = false
+      outer: for (let i = Math.floor((c.x - r) / DETAIL_CELL); i <= Math.floor((c.x + r) / DETAIL_CELL); i++) {
+        for (let j = Math.floor((c.z - r) / DETAIL_CELL); j <= Math.floor((c.z + r) / DETAIL_CELL); j++) {
+          if (this.detailCells.has(`${i}_${j}`)) {
+            tile.detail = true
+            break outer
+          }
+        }
+      }
+      tile.detailVersion = this.detailVersion
+    }
+    return tile.detail
+  }
+
   wantsSplit(tile) {
     if (tile.z >= this.maxZoom || tile.noSplit) return false
     // Children need a ground map at their own zoom, or (past the maps' deepest
@@ -475,8 +520,12 @@ export class Terrain {
     const y = tile.y * 2
     if (!(this.has('landcover', gz, x >> shift, y >> shift) && this.has('landcover', gz, (x + 1) >> shift, (y + 1) >> shift))) return false
     const d = Math.max(this.camPos.distanceTo(tile.sphere.center) - tile.sphere.radius, 1)
+    if (d > this.farDistance && tile.z >= this.farZoom) return false
+    let threshold = this.sseThreshold
+    // Empty land refines one to two zooms later, except right around the viewer.
+    if (tile.z >= SPARSE_FROM_ZOOM && d > SPARSE_NEAR && !this.hasDetail(tile)) threshold *= SPARSE_FACTOR
     const texel = tile.widthMeters / 256
-    return (texel * this.screenScale) / d > this.sseThreshold
+    return (texel * this.screenScale) / d > threshold
   }
 
   visit(tile) {

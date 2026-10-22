@@ -1,9 +1,11 @@
 // Streaming quadtree terrain: Web Mercator tiles meshed in the local frame.
 //
-// Elevation comes from AWS Terrain Tiles (terrarium PNG, USGS 3DEP in the US)
-// up to z15; deeper tiles resample their z15 ancestor. Imagery tiles go to
-// the provider's max zoom. A tile replaces its parent only once all of its
-// visible children have loaded, so the ground never has holes while refining.
+// Imagery (USDA NAIP) and elevation (terrarium encoding, USGS 3DEP) are a
+// snapshot baked into public/tiles/ by data-prep/build_snapshot.py, so the
+// site serves its own tiles. tiles/coverage.json lists which zooms exist where;
+// a tile only splits when all four children exist, and uses the deepest
+// elevation tile available above it. A tile replaces its parent only once all
+// of its visible children have loaded, so the ground never has holes.
 
 import {
   BufferAttribute,
@@ -32,24 +34,8 @@ import region from './region.json'
 
 const SEG = 32
 const GRID = SEG + 1
-const ELEVATION_URL = (z, x, y) => `https://s3.amazonaws.com/elevation-tiles-prod/terrarium/${z}/${x}/${y}.png`
-
-export const IMAGERY_PROVIDERS = {
-  esri: {
-    name: 'Esri World Imagery',
-    url: (z, x, y) => `https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/${z}/${y}/${x}`,
-    maxZoom: 19,
-    credit: 'Imagery © Esri, Maxar, Earthstar Geographics, and the GIS User Community'
-  },
-  usgs: {
-    name: 'USGS National Map (NAIP)',
-    url: (z, x, y) => `https://basemap.nationalmap.gov/arcgis/rest/services/USGSImageryOnly/MapServer/tile/${z}/${y}/${x}`,
-    maxZoom: 16,
-    credit: 'Imagery: USGS The National Map, USDA NAIP (public domain)'
-  }
-}
-
-export const TERRAIN_CREDIT = 'Terrain: AWS Terrain Tiles (USGS 3DEP, Mapzen)'
+const TILES = `${import.meta.env.BASE_URL}tiles`
+const tileUrl = (kind, z, x, y) => `${TILES}/${kind}/${z}/${x}/${y}.webp`
 
 // Grid indices plus two-sided skirts along all four edges.
 const INDEX = (() => {
@@ -121,7 +107,7 @@ async function fetchBitmap(url, signal) {
 }
 
 async function fetchElevation(z, x, y) {
-  const bitmap = await fetchBitmap(ELEVATION_URL(z, x, y))
+  const bitmap = await fetchBitmap(tileUrl('elevation', z, x, y))
   decodeCanvas ??= new OffscreenCanvas(256, 256)
   const ctx = decodeCanvas.getContext('2d', { willReadFrequently: true })
   ctx.drawImage(bitmap, 0, 0)
@@ -219,12 +205,21 @@ class Tile {
 }
 
 export class Terrain {
-  constructor(renderer, { provider = 'esri', sseThreshold = 1.0, maxTiles = 700, maxConcurrent = 8 } = {}) {
+  constructor(renderer, { sseThreshold = 1.0, maxTiles = 700, maxConcurrent = 8 } = {}) {
     this.renderer = renderer
     this.group = new Group()
     this.group.name = 'terrain'
-    this.provider = IMAGERY_PROVIDERS[provider] ?? IMAGERY_PROVIDERS.esri
-    this.maxImageryZoom = Math.min(region.terrain.maxImageryZoom, this.provider.maxZoom)
+    this.coverage = null
+    this.ready = fetch(`${TILES}/coverage.json`)
+      .then((r) => r.json())
+      .then((c) => {
+        this.coverage = c
+        this.credits = [c.imageryCredit, c.elevationCredit]
+        this.maxImageryZoom = Math.max(...Object.keys(c.imagery).map(Number))
+      })
+      .catch((err) => {
+        this.lastError = `coverage: ${err.message}`
+      })
     this.maxElevationZoom = region.terrain.maxElevationZoom
     this.sseThreshold = sseThreshold
     this.maxTiles = maxTiles
@@ -256,6 +251,20 @@ export class Terrain {
     return { loaded: this.loadedCount, visible, loading: this.loading, queued: this.needed.size, failed: this.failedCount }
   }
 
+  has(kind, z, x, y) {
+    const r = this.coverage?.[kind][z]
+    return !!r && x >= r[0] && x <= r[1] && y >= r[2] && y <= r[3]
+  }
+
+  // Deepest available elevation tile at or above tile (z, x, y).
+  elevationSource(z, x, y) {
+    for (let ez = Math.min(z, this.maxElevationZoom); ez >= 0; ez--) {
+      const shift = z - ez
+      if (this.has('elevation', ez, x >> shift, y >> shift)) return [ez, x >> shift, y >> shift]
+    }
+    return null
+  }
+
   elevationTile(z, x, y) {
     const key = `${z}/${x}/${y}`
     let p = this.elevationCache.get(key)
@@ -271,13 +280,12 @@ export class Terrain {
     tile.state = 'loading'
     this.loading++
     try {
-      const ez = Math.min(tile.z, this.maxElevationZoom)
-      const shift = tile.z - ez
-      const ex = tile.x >> shift
-      const ey = tile.y >> shift
+      const source = this.elevationSource(tile.z, tile.x, tile.y)
+      if (!source) throw new Error(`no elevation for ${tile.z}/${tile.x}/${tile.y}`)
+      const [ez, ex, ey] = source
       const [elev, bitmap] = await Promise.all([
         this.elevationTile(ez, ex, ey),
-        fetchBitmap(this.provider.url(tile.z, tile.x, tile.y))
+        fetchBitmap(tileUrl('imagery', tile.z, tile.x, tile.y))
       ])
       if (tile.state !== 'loading') {
         bitmap.close()
@@ -382,6 +390,10 @@ export class Terrain {
 
   wantsSplit(tile) {
     if (tile.z >= this.maxImageryZoom || tile.noSplit) return false
+    const z = tile.z + 1
+    const x = tile.x * 2
+    const y = tile.y * 2
+    if (!(this.has('imagery', z, x, y) && this.has('imagery', z, x + 1, y + 1))) return false
     const d = Math.max(this.camPos.distanceTo(tile.sphere.center) - tile.sphere.radius, 1)
     const texel = tile.widthMeters / 256
     return (texel * this.screenScale) / d > this.sseThreshold
@@ -419,6 +431,7 @@ export class Terrain {
   }
 
   update(camera) {
+    if (!this.coverage) return
     this.frame++
     camera.updateMatrixWorld()
     this.camPos.setFromMatrixPosition(camera.matrixWorld)

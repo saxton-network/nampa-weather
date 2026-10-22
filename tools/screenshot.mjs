@@ -12,7 +12,6 @@ import { chromium } from 'playwright-core'
 const outDir = process.argv[2] ?? 'screenshots'
 const views = process.argv.slice(3).length ? process.argv.slice(3) : ['overview', 'downtown', 'neighborhood', 'street', 'mountains']
 const base = process.env.VIEWER_URL ?? 'http://localhost:4173/'
-const time = process.env.VIEW_TIME ?? '2026-10-22T19:30:00Z' // 1:30 pm MDT
 const extra = process.env.VIEW_PARAMS ?? ''
 mkdirSync(outDir, { recursive: true })
 
@@ -29,7 +28,7 @@ page.on('console', (m) => {
 page.on('pageerror', (e) => console.log(`[pageerror] ${e.message}`))
 
 for (const view of views) {
-  const url = `${base}?view=${view}&t=${encodeURIComponent(time)}&debug=1${extra}`
+  const url = `${base}?view=${view}&debug=1${extra}`
   const t0 = Date.now()
   await page.goto(url)
   try {

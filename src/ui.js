@@ -1,7 +1,5 @@
 // On-screen controls, the debug panel and data credits.
 
-import { formatLocal } from './time.js'
-
 const el = (tag, attrs = {}, ...children) => {
   const e = document.createElement(tag)
   for (const [k, v] of Object.entries(attrs)) {
@@ -14,7 +12,7 @@ const el = (tag, attrs = {}, ...children) => {
 }
 
 export class UI {
-  constructor({ presets, imagery, legend, onMode, onPreset, onTime, onNow, onImagery, onTouchMove, onFaceNorth, onLabels, onCameras }) {
+  constructor({ presets, legend, onMode, onPreset, onTouchMove, onFaceNorth, onLabels, onCameras }) {
     this.errors = []
     this.root = el('div', { class: 'ui' })
 
@@ -29,22 +27,6 @@ export class UI {
       ...Object.entries(presets).map(([k, p]) => el('option', { value: k }, p.label))
     )
     presetSelect.addEventListener('change', () => (presetSelect.value = ''))
-    this.timeLabel = el('span', { class: 'time-label' })
-    this.timeSlider = el('input', {
-      type: 'range',
-      min: '0',
-      max: '24',
-      step: '0.05',
-      'aria-label': 'Time of day',
-      oninput: (e) => onTime(+e.target.value)
-    })
-    const imagerySelect = el(
-      'select',
-      { 'aria-label': 'Imagery source', onchange: (e) => onImagery(e.target.value) },
-      ...Object.entries(imagery.options).map(([k, p]) => el('option', { value: k }, p.name))
-    )
-    imagerySelect.value = imagery.current
-
     this.debugToggle = el('button', { class: 'small', onclick: () => this.toggleDebug() }, 'Debug')
     this.labelsBox = el('input', { type: 'checkbox', checked: '', onchange: (e) => onLabels(e.target.checked) })
     this.onLabels = onLabels
@@ -60,10 +42,7 @@ export class UI {
       { class: 'panel' },
       el('div', { class: 'title' }, 'Nampa, Idaho'),
       el('div', { class: 'row seg' }, this.modeButtons.drone, this.modeButtons.walk),
-      el('div', { class: 'row' }, presetSelect),
-      el('div', { class: 'row' }, this.timeLabel),
-      el('div', { class: 'row' }, this.timeSlider, el('button', { class: 'small', onclick: onNow }, 'Now')),
-      el('div', { class: 'row' }, imagerySelect, this.debugToggle),
+      el('div', { class: 'row' }, presetSelect, this.debugToggle),
       el('label', { class: 'row check' }, this.labelsBox, 'Street names (L)'),
       el('label', { class: 'row check' }, this.camerasBox, 'Plate-reader cameras (C)', this.cameraCount),
       legendRow
@@ -181,51 +160,6 @@ export class UI {
         : coarse
           ? 'Drag to pan · two fingers to rotate and zoom'
           : 'Drag to pan · right-drag to rotate · scroll to zoom'
-  }
-
-  setTime(date, hours) {
-    this.timeLabel.textContent = formatLocal(date)
-    if (hours != null) this.timeSlider.value = String(hours)
-  }
-
-  setHeading(deg) {
-    this.rose.setAttribute('transform', `rotate(${(-deg).toFixed(1)})`)
-    // Keep the letters upright while the rose turns.
-    for (const t of this.letters) {
-      t.setAttribute('transform', `rotate(${deg.toFixed(1)} ${t.getAttribute('x')} ${t.getAttribute('y')})`)
-    }
-    const names = ['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW']
-    this.headingText.textContent = `${names[Math.round(deg / 45) % 8]} ${Math.round(deg) % 360}°`
-  }
-
-  // street: { short } or null; prefix: 'On' or 'Near'; extra: optional suffix.
-  setHere(street, prefix, extra) {
-    const parts = [street ? `${prefix} ${street.short}` : null, extra].filter(Boolean)
-    this.here.hidden = !parts.length
-    this.here.textContent = parts.join('  ·  ')
-  }
-
-  setCameraCount(text) {
-    this.cameraCount.textContent = text
-  }
-
-  // info: { title, color, rows: [[label, value]] }; actions: [[label, fn] | [label, url, 'link']]
-  showCard(info, actions) {
-    this.cardTitle.textContent = info.title
-    this.cardTitle.style.setProperty('--dot', info.color)
-    this.cardRows.replaceChildren(...info.rows.flatMap(([k, val]) => [el('dt', {}, k), el('dd', {}, val)]))
-    this.cardActions.replaceChildren(
-      ...actions.map(([label, target, kind]) =>
-        kind === 'link'
-          ? el('a', { href: target, target: '_blank', rel: 'noopener' }, label)
-          : el('button', { onclick: target }, label)
-      )
-    )
-    this.card.hidden = false
-  }
-
-  hideCard() {
-    this.card.hidden = true
   }
 
   setCredits(lines) {

@@ -15,13 +15,75 @@
   "terrain": {
     "rootZoom": 9,
     "rootRadiusTiles": 1,
-    "maxElevationZoom": 15,
-    "maxImageryZoom": 19
+    "maxElevationZoom": 15
   },
   "cameraBbox": {
     "west": -117.3,
     "south": 43.1,
     "east": -115.8,
     "north": 44.0
+  },
+  "snapshot": {
+    "note": "Imagery and elevation tiers baked into public/tiles by data-prep/build_snapshot.py. 'roots' means the terrain root tiles' full extent.",
+    "imagery": [
+      {
+        "name": "valley",
+        "bbox": "roots",
+        "zooms": [
+          9,
+          12
+        ]
+      },
+      {
+        "name": "treasure-valley",
+        "bbox": {
+          "west": -117.0,
+          "south": 43.35,
+          "east": -116.1,
+          "north": 43.8
+        },
+        "zooms": [
+          13,
+          14
+        ]
+      },
+      {
+        "name": "nampa",
+        "bbox": {
+          "west": -116.72,
+          "south": 43.49,
+          "east": -116.43,
+          "north": 43.67
+        },
+        "zooms": [
+          15,
+          17
+        ]
+      }
+    ],
+    "elevation": [
+      {
+        "name": "valley",
+        "bbox": "roots",
+        "zooms": [
+          9,
+          12
+        ]
+      },
+      {
+        "name": "nampa",
+        "bbox": {
+          "west": -116.72,
+          "south": 43.49,
+          "east": -116.43,
+          "north": 43.67
+        },
+        "zooms": [
+          13,
+          15
+        ]
+      }
+    ],
+    "sunTime": "2026-07-15T20:30:00Z"
   }
 }

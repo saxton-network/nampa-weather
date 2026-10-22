@@ -7,8 +7,7 @@ import { geodeticToLocal } from './geo.js'
 import region from './region.json'
 import { Sky } from './sky.js'
 import { Streets } from './streets.js'
-import { IMAGERY_PROVIDERS, TERRAIN_CREDIT, Terrain } from './terrain.js'
-import { atLocalHours, localHours } from './time.js'
+import { Terrain } from './terrain.js'
 import { UI } from './ui.js'
 
 const params = new URLSearchParams(location.search)
@@ -40,14 +39,10 @@ document.body.append(renderer.domElement)
 const scene = new Scene()
 const camera = new PerspectiveCamera(55, innerWidth / innerHeight, 0.5, 400000)
 
-let imageryKey = IMAGERY_PROVIDERS[params.get('imagery')] ? params.get('imagery') : 'esri'
-const makeTerrain = () =>
-  new Terrain(renderer, {
-    provider: imageryKey,
-    sseThreshold: lowQuality ? 1.6 : 1.0,
-    maxTiles: lowQuality ? 350 : 700
-  })
-let terrain = makeTerrain()
+const terrain = new Terrain(renderer, {
+  sseThreshold: lowQuality ? 1.6 : 1.0,
+  maxTiles: lowQuality ? 350 : 700
+})
 scene.add(terrain.group)
 const buildings = new Buildings()
 scene.add(buildings.group)
@@ -57,37 +52,16 @@ const drone = new DroneControls(camera, renderer.domElement, terrain)
 const walk = new WalkControls(camera, renderer.domElement, terrain)
 let mode = 'drone'
 
-// --- time of day ------------------------------------------------------------
-let date = params.get('t') ? new Date(params.get('t')) : new Date()
-if (Number.isNaN(date.getTime())) date = new Date()
-let followNow = !params.get('t')
+// The scene is a frozen snapshot: one fixed sun position, close to when the
+// summer aerial imagery was flown, so the lighting matches its shadows.
+const SUN_TIME = new Date(region.snapshot.sunTime)
+sky.setDate(SUN_TIME)
 
 const ui = new UI({
   presets: PRESETS,
-  imagery: { options: IMAGERY_PROVIDERS, current: imageryKey },
   legend: BRANDS.map((b) => ({ label: b.label.replace(' Solutions', ''), color: `#${b.color.toString(16).padStart(6, '0')}` })),
   onMode: setMode,
   onPreset: (k) => applyPreset(PRESETS[k]),
-  onTime: (hours) => {
-    followNow = false
-    date = atLocalHours(date, hours)
-    ui.setTime(date)
-  },
-  onNow: () => {
-    followNow = true
-    date = new Date()
-    ui.setTime(date, localHours(date))
-  },
-  onImagery: (key) => {
-    imageryKey = key
-    scene.remove(terrain.group)
-    for (const r of terrain.roots) terrain.disposeTile(r)
-    terrain = makeTerrain()
-    drone.terrain = walk.terrain = cameras.terrain = terrain
-    for (const c of cameras.list) c.placedZoom = Math.min(c.placedZoom, 0)
-    scene.add(terrain.group)
-    updateCredits()
-  },
   onTouchMove: (dir) => (walk.touchMove = dir),
   onFaceNorth: () => (mode === 'walk' ? walk.faceNorth() : drone.faceNorth()),
   onLabels: (on) => (streets.visible = on),
@@ -159,15 +133,15 @@ cameras.ready.then(() => {
   const wanted = cameras.byId(params.get('camera'))
   if (wanted) flyToCamera(wanted)
 })
-ui.setTime(date, localHours(date))
 
 const MAP_DATA_CREDIT = 'Streets and buildings © OpenStreetMap contributors, Overture Maps Foundation, Microsoft, Esri Community Maps'
 const CAMERA_CREDIT = 'ALPR locations © OpenStreetMap contributors via DeFlock'
 
 function updateCredits() {
-  ui.setCredits([IMAGERY_PROVIDERS[imageryKey].credit, TERRAIN_CREDIT, MAP_DATA_CREDIT, CAMERA_CREDIT])
+  ui.setCredits([...(terrain.credits ?? []), MAP_DATA_CREDIT, CAMERA_CREDIT])
 }
 updateCredits()
+terrain.ready.then(updateCredits)
 
 // --- camera modes -----------------------------------------------------------
 function groundPoint(lat, lon) {
@@ -242,8 +216,6 @@ function frame(timestamp) {
   const dt = Math.min(timer.getDelta(), 0.1)
   renderer.info.reset()
   const t0 = performance.now()
-  if (followNow) date = new Date()
-  sky.setDate(date)
 
   if (mode === 'walk') walk.update(dt)
   else drone.update(dt)
@@ -285,7 +257,6 @@ function frame(timestamp) {
     fps.value = (fps.frames * 1000) / (now - fps.last)
     fps.frames = 0
     fps.last = now
-    if (followNow) ui.setTime(date, localHours(date))
     const ts = terrain.stats
     const bs = buildings.stats
     const info = renderer.info.render

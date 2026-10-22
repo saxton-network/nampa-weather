@@ -88,3 +88,14 @@ Imagery © Esri, Maxar, Earthstar Geographics, and the GIS User Community ·
 USGS The National Map / USDA NAIP · Terrain: AWS Terrain Tiles (USGS 3DEP, Mapzen) ·
 Buildings © Overture Maps Foundation, © OpenStreetMap contributors, Microsoft, Esri Community Maps ·
 Atmosphere: takram three-geospatial (MIT).
+
+**Data license.** The building tiles in `public/data/buildings/` are derived from
+Overture Maps buildings. They are redistributed under the same terms:
+[ODbL 1.0](https://opendatacommons.org/licenses/odbl/1-0/) for parts derived from
+OpenStreetMap and [CDLA-Permissive-2.0](https://cdla.dev/permissive-2-0/) for the rest.
+
+## Hosting
+
+`.github/workflows/deploy-pages.yml` builds the site and publishes it to GitHub
+Pages on every push to `main`. In the repository, set Settings → Pages →
+Source to **GitHub Actions** once.

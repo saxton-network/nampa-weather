@@ -5,6 +5,7 @@ import { BRANDS, Cameras, cardinal, describeCamera } from './cameras.js'
 import { DroneControls, WalkControls, cameraHeading, groundHeightBelow } from './controls.js'
 import { geodeticToLocal } from './geo.js'
 import region from './region.json'
+import { SunShadows } from './shadows.js'
 import { Sky } from './sky.js'
 import { RoadTiles } from './roads.js'
 import { Streets } from './streets.js'
@@ -56,12 +57,17 @@ const sky = new Sky(renderer, scene, camera)
 
 const drone = new DroneControls(camera, renderer.domElement, terrain)
 const walk = new WalkControls(camera, renderer.domElement, terrain)
+walk.collide = (x, z, r) => buildings.collide(x, z, r)
 let mode = 'drone'
 
-// The scene is a frozen snapshot: one fixed sun position, close to when the
-// summer aerial imagery was flown, so the lighting matches its shadows.
-const SUN_TIME = new Date(region.snapshot.sunTime)
+// The scene is a frozen snapshot with one fixed sun: a mid-July late
+// afternoon, low enough for long shadows and warm light.
+// ?sun=<ISO time> overrides it, for checking lighting and shadows.
+const sunParam = params.get('sun') && new Date(params.get('sun'))
+const SUN_TIME = sunParam && !Number.isNaN(sunParam.getTime()) ? sunParam : new Date(region.snapshot.sunTime)
 sky.setDate(SUN_TIME)
+const shadows = new SunShadows(renderer, lowQuality ? 1024 : 2048)
+shadows.setSun(sky.aerial.sunDirection)
 
 const ui = new UI({
   presets: PRESETS,
@@ -165,9 +171,11 @@ function setMode(next, { at, heading } = {}) {
     walk.enabled = true
     walk.placeAt(p, h)
     camera.near = 0.3
+    camera.fov = 72
   } else {
     walk.exit()
     walk.enabled = false
+    camera.fov = 55
     const target = camera.position.clone()
     if (mode === 'walk') {
       drone.enabled = true
@@ -240,6 +248,14 @@ function frame(timestamp) {
   terrain.update(camera)
   buildings.update(camera.position, agl)
   trees.update(camera.position, agl)
+  // Shadows cover a box around where you are looking from, sized to the view.
+  if (agl < 1500) {
+    const center = mode === 'walk' ? camera.position : drone.controls.target
+    const r = mode === 'walk' ? 90 : Math.min(Math.max(camera.position.distanceTo(center) * 1.2, 100), 1000)
+    shadows.update(scene, center, r, [buildings.group, trees.group], [terrain.group, cameras.group])
+  } else {
+    shadows.disable()
+  }
   sky.render(dt)
   streets.update(camera, { mode, agl, width: innerWidth, height: innerHeight, occluded: occludedByBuildings })
   cameras.update(camera, { mode, agl, width: innerWidth, height: innerHeight })

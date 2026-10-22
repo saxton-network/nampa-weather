@@ -21,7 +21,9 @@ overlay. That plan is parked; the camera overlay replaced it.
 | Buildings | [Overture Maps](https://overturemaps.org/) buildings, release 2026-10-21.0 | 77,803 buildings, pre-cut into 1 km tiles in `public/data/buildings/`, meshed in a Web Worker. Houses get gable or hip roofs |
 | Street names | Overture Maps transportation (from OpenStreetMap) | 12,070 named road segments in `public/data/roads/`. Labels follow the roads in drone mode, stand at sign height in walk mode, and are hidden when a building blocks the view |
 | ALPR cameras | OpenStreetMap nodes tagged `surveillance:type=ALPR`, mapped by the [DeFlock](https://deflock.org) community | 253 cameras across the Treasure Valley in `public/data/cameras.json`, refreshed on every deploy and daily. Each camera gets a pole, a head per direction it faces and a translucent ground wedge showing what it points at, coloured by brand. Clickable pins cluster when zoomed out |
-| Sky and light | [`@takram/three-atmosphere`](https://github.com/takram-design-engineering/three-geospatial) | Physically based sky and aerial haze, with the sun fixed at a summer early afternoon (`snapshot.sunTime` in `src/region.json`) to match the aerial photos |
+| Facades | Generated from each building's Overture type and height | Walls get windows, doors and shopfronts from the building's type and height, drawn by a shader so they cost no geometry |
+| Shadows | Sun shadow map | Buildings and trees cast shadows on the ground, walls and each other within a box around the view |
+| Sky and light | [`@takram/three-atmosphere`](https://github.com/takram-design-engineering/three-geospatial) | Physically based sky and aerial haze, with the sun fixed at a mid-July late afternoon (`snapshot.sunTime` in `src/region.json`) for long shadows and warm light |
 | Engine | three.js 0.186 + postprocessing | Logarithmic depth buffer, SMAA |
 
 **The scene is a frozen snapshot with its own look.** Nothing photographic is
@@ -31,12 +33,12 @@ are all saved in the site itself, and the lighting never changes, so a
 visitor's browser makes no requests to outside servers. Only the camera
 locations are refreshed, at build time.
 
-![Plate-reader cameras over Nampa](docs/screenshots/cameras-overview.jpg)
+![A Nampa neighbourhood: generated ground, trees and houses](docs/screenshots/neighborhood.jpg)
 
 ## Using it
 
 - **Drone mode (default):** drag to pan, right-drag (or two fingers) to rotate, scroll to zoom toward the cursor.
-- **Walk mode:** press **V** or click *Walk*. Click to capture the mouse, use WASD or the arrow keys to walk, and hold Shift to run. Esc releases the mouse. On touch screens, drag to look and hold ▲ ▼ to walk.
+- **Walk mode:** press **V** or click *Walk*. Click to capture the mouse, then WASD or the arrow keys to walk, Shift to run and Space to jump; buildings are solid. Esc releases the mouse. On touch screens, drag to look and hold ▲ ▼ to walk.
 - **Plate-reader cameras:** click a pin for its brand, facing direction(s), mount, operator and last edit, with *Fly to*, *Look from here* (walk mode at the pole, facing where the camera looks) and a link to the OpenStreetMap node. Numbered pins are clusters; click one to zoom in. Press **C** to show or hide the overlay. The top pill shows the nearest camera's distance and direction.
 - **Compass** (top right): the red needle points north and the readout shows which way you are facing. Click it or press **N** to turn and face north.
 - **Street names:** press **L** or use the checkbox to show or hide them. The pill at the top shows the street you are on (walk mode) or the one under the view's centre (drone mode).

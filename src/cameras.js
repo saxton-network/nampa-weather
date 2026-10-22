@@ -258,7 +258,8 @@ export class Cameras {
 
     // Screen pins, clustered greedily nearest-first.
     camera.updateMatrixWorld()
-    const maxDist = walk ? 600 : Math.max(25000, agl * 20)
+    // Near the ground only nearby pins matter; from high up, the whole valley.
+    const maxDist = walk ? 400 : Math.min(Math.max(agl * 40, 400), 25000)
     const hits = []
     for (const c of this.list) {
       if (c.placedZoom < 0) continue

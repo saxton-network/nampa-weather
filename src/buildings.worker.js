@@ -4,7 +4,11 @@
 //   [baseY, height, minHeight, kind, roof, heightEstimated, ringDecimeters, facadeColor?, roofColor?]
 // The ring is counter-clockwise in (x, -z), in decimetres from the tile origin.
 // Output is non-indexed geometry with flat normals and linear vertex colours
-// (albedo for the atmosphere's post-process lighting).
+// (albedo for the atmosphere's post-process lighting), plus a per-vertex
+// facade attribute [u along the wall, height above ground, wall length, style]
+// that the building shader (buildings.js) turns into windows and doors.
+// Style: -1 none (roofs, gables, sheds), 0 house, 1 shopfront, 2 apartment/civic;
+// +10 marks the wall that gets the front door.
 
 import { ShapeUtils, Vector2 } from 'three'
 
@@ -41,15 +45,19 @@ function hash(a, b) {
 
 const pick = (list, h) => list[h % list.length]
 
+const NO_FACADE = [0, 0, 0, -1]
+
 class Builder {
   constructor() {
     this.pos = []
     this.nor = []
     this.col = []
+    this.fac = []
   }
 
   // Adds a triangle, flipping its winding so the normal faces `want`.
-  tri(a, b, c, color, want) {
+  // fa/fb/fc are the facade attributes of the three corners.
+  tri(a, b, c, color, want, fa = NO_FACADE, fb = NO_FACADE, fc = NO_FACADE) {
     const ux = b[0] - a[0], uy = b[1] - a[1], uz = b[2] - a[2]
     const vx = c[0] - a[0], vy = c[1] - a[1], vz = c[2] - a[2]
     let nx = uy * vz - uz * vy
@@ -62,20 +70,22 @@ class Builder {
     nz /= len
     if (nx * want[0] + ny * want[1] + nz * want[2] < 0) {
       ;[b, c] = [c, b]
+      ;[fb, fc] = [fc, fb]
       nx = -nx
       ny = -ny
       nz = -nz
     }
     this.pos.push(...a, ...b, ...c)
+    this.fac.push(...fa, ...fb, ...fc)
     for (let i = 0; i < 3; i++) {
       this.nor.push(nx, ny, nz)
       this.col.push(color[0], color[1], color[2])
     }
   }
 
-  quad(a, b, c, d, color, want) {
-    this.tri(a, b, c, color, want)
-    this.tri(a, c, d, color, want)
+  quad(a, b, c, d, color, want, fa, fb, fc, fd) {
+    this.tri(a, b, c, color, want, fa, fb, fc)
+    this.tri(a, c, d, color, want, fa, fc, fd)
   }
 }
 
@@ -208,10 +218,31 @@ function buildTile(tile) {
       top = eave + roofH
     }
 
+    // Facade style from the building's type and size; the longest wall of a
+    // house or shop gets the door.
+    const tall = height > 9
+    let style = kind === KIND_RESIDENTIAL ? (tall ? 2 : 0) : kind === KIND_COMMERCIAL ? 1 : kind === 0 ? (area > 400 ? 1 : 0) : 2
+    if (area < 35) style = -1
+    let doorEdge = -1
+    let longest = 0
+    for (let i = 0; i < n; i++) {
+      const len = Math.hypot(xs[(i + 1) % n] - xs[i], zs[(i + 1) % n] - zs[i])
+      if (len > longest) {
+        longest = len
+        doorEdge = i
+      }
+    }
     for (let i = 0; i < n; i++) {
       const j = (i + 1) % n
       const out = [-(zs[j] - zs[i]), 0, xs[j] - xs[i]]
-      b.quad([xs[i], bottom, zs[i]], [xs[j], bottom, zs[j]], [xs[j], eave, zs[j]], [xs[i], eave, zs[i]], wallColor, out)
+      const len = Math.hypot(xs[j] - xs[i], zs[j] - zs[i])
+      const st = style < 0 ? -1 : style + (i === doorEdge ? 10 : 0)
+      const v0 = bottom - baseY
+      const v1 = eave - baseY
+      b.quad(
+        [xs[i], bottom, zs[i]], [xs[j], bottom, zs[j]], [xs[j], eave, zs[j]], [xs[i], eave, zs[i]], wallColor, out,
+        [0, v0, len, st], [len, v0, len, st], [len, v1, len, st], [0, v1, len, st]
+      )
     }
 
     if (pitched) {
@@ -227,7 +258,8 @@ function buildTile(tile) {
   return {
     positions: new Float32Array(b.pos),
     normals: new Float32Array(b.nor),
-    colors: new Float32Array(b.col)
+    colors: new Float32Array(b.col),
+    facades: new Float32Array(b.fac)
   }
 }
 
@@ -235,7 +267,7 @@ self.onmessage = (e) => {
   const { id, tile } = e.data
   try {
     const out = buildTile(tile)
-    self.postMessage({ id, ...out, count: tile.b.length }, [out.positions.buffer, out.normals.buffer, out.colors.buffer])
+    self.postMessage({ id, ...out, count: tile.b.length }, [out.positions.buffer, out.normals.buffer, out.colors.buffer, out.facades.buffer])
   } catch (err) {
     self.postMessage({ id, error: String(err?.message ?? err) })
   }

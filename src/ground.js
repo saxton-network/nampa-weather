@@ -4,6 +4,7 @@
 // with distance. Output is unlit albedo; the atmosphere pass lights it.
 
 import { Color, DataTexture, NearestFilter, ShaderMaterial, Vector4 } from 'three'
+import { SHADOW_GLSL, SHADOW_UNIFORMS } from './shadows.js'
 
 // Ground types, same ids as build_landcover.py. Two colours per type (sRGB),
 // blended by the noise mix in `w` (large patches, mid, fine grain, crop rows).
@@ -51,6 +52,7 @@ uniform sampler2D roadMap;
 uniform float hasRoads;
 varying vec2 vUv;
 varying vec3 vPos;
+${SHADOW_GLSL}
 
 const vec3 COLOR_A[${N}] = vec3[](
   ${arr((t) => lin(t.a))}
@@ -110,9 +112,11 @@ void main() {
   // Blend the four nearest ground-type texels, with jittered edges so the
   // map's pixel grid never shows.
   vec2 tp = (classXform.xy + vUv * classXform.zw) * 256.0 - 0.5;
-  tp += (vec2(vnoise(w / 2.0, 512.0), vnoise(w / 2.0 + 17.0, 512.0)) - 0.5) * 0.9;
+  // Two octaves of offset: broad wobble plus finer ragged edges, in texels.
+  tp += (vec2(vnoise(w / 2.5, 409.6), vnoise(w / 2.5 + 17.0, 409.6)) - 0.5) * 1.6;
+  tp += (vec2(vnoise(w * 1.25, 1280.0), vnoise(w * 1.25 + 31.0, 1280.0)) - 0.5) * 0.6;
   vec2 cell = floor(tp);
-  vec2 f = smoothstep(0.15, 0.85, fract(tp));
+  vec2 f = smoothstep(0.05, 0.95, fract(tp));
   ivec2 c0 = clamp(ivec2(cell), ivec2(0), ivec2(255));
   ivec2 c1 = clamp(ivec2(cell) + 1, ivec2(0), ivec2(255));
   int i00 = int(texelFetch(classMap, ivec2(c0.x, c0.y), 0).r * 255.0 + 0.5);
@@ -140,6 +144,7 @@ void main() {
     col = mix(col, PAINT_WHITE, white);
   }
   col *= 0.88 + 0.24 * grit;
+  col *= sunShade(vPos);
   gl_FragColor = vec4(col, 1.0);
 }
 `
@@ -156,12 +161,14 @@ const base = new ShaderMaterial({
     classMap: { value: null },
     classXform: { value: new Vector4(0, 0, 1, 1) },
     roadMap: { value: NO_ROADS },
-    hasRoads: { value: 0 }
+    hasRoads: { value: 0 },
+    ...SHADOW_UNIFORMS
   }
 })
 
 export function groundMaterial({ classMap, classXform, roadMap }) {
   const m = base.clone() // shares the compiled program
+  Object.assign(m.uniforms, SHADOW_UNIFORMS) // shared objects, so updates reach every tile
   m.uniforms.classMap.value = classMap
   m.uniforms.classXform.value.copy(classXform)
   if (roadMap) {

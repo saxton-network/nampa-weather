@@ -16,6 +16,7 @@ import {
   Vector3
 } from 'three'
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js'
+import { receiveShadows } from './shadows.js'
 
 const BASE = import.meta.env.BASE_URL
 const RECORD = 10 // bytes: int16 x_dm, int16 z_dm, float32 base_y, uint8 height_dm/2, uint8 seed
@@ -52,7 +53,7 @@ export class Trees {
   constructor() {
     this.group = new Group()
     this.group.name = 'trees'
-    this.material = new MeshBasicMaterial({ vertexColors: true })
+    this.material = receiveShadows(new MeshBasicMaterial({ vertexColors: true }))
     this.tiles = new Map() // "i_j" -> { state, meshes, count }
     this.count = 0
     this.loading = 0

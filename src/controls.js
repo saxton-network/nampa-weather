@@ -99,6 +99,8 @@ export class DroneControls {
   }
 }
 
+// First-person walking with game-style feel: eased acceleration, sprint, jump
+// with gravity, a light head bob, and building walls you can't walk through.
 export class WalkControls {
   constructor(camera, dom, terrain) {
     this.camera = camera
@@ -109,12 +111,26 @@ export class WalkControls {
     this.pitch = 0
     this.keys = new Set()
     this.touchMove = 0
-    this.speed = 2.2
-    this.runSpeed = 9
+    this.speed = 2.4
+    this.runSpeed = 7.5
     this.dragging = null
+    this.collide = null // (x, z, radius) -> [x, z], set by main.js
+    this.pos = new Vector3() // eye position without head bob
+    this.vel = new Vector3()
+    this.vy = 0
+    this.airborne = false
+    this.bob = 0
 
     document.addEventListener('keydown', (e) => {
-      if (this.enabled && !e.target.closest?.('input,select,textarea')) this.keys.add(e.code)
+      if (!this.enabled || e.target.closest?.('input,select,textarea')) return
+      this.keys.add(e.code)
+      if (e.code === 'Space') {
+        e.preventDefault()
+        if (!this.airborne) {
+          this.vy = 4.2
+          this.airborne = true
+        }
+      }
     })
     document.addEventListener('keyup', (e) => this.keys.delete(e.code))
     window.addEventListener('blur', () => this.keys.clear())
@@ -143,11 +159,16 @@ export class WalkControls {
 
   // Start walking at `p` (local frame), facing `heading` degrees from north.
   placeAt(p, heading) {
-    this.camera.position.copy(p)
+    this.pos.copy(p)
+    if (this.collide) [this.pos.x, this.pos.z] = this.collide(this.pos.x, this.pos.z, 0.4)
     this.yaw = -heading * DEG
     this.pitch = 0
-    const gy = groundY(this.terrain, p, EYE_HEIGHT)
-    if (gy != null) this.camera.position.y = gy
+    this.vel.set(0, 0, 0)
+    this.vy = 0
+    this.airborne = false
+    const gy = groundY(this.terrain, this.pos, EYE_HEIGHT)
+    if (gy != null) this.pos.y = gy
+    this.camera.position.copy(this.pos)
   }
 
   get heading() {
@@ -178,14 +199,39 @@ export class WalkControls {
       if (Math.abs(diff) < 0.002) this.yawTarget = null
     }
     const run = k.has('ShiftLeft') || k.has('ShiftRight')
-    const speed = (run ? this.runSpeed : this.speed) * dt
+    const len = Math.hypot(fwd, side) || 1
+    const speed = run ? this.runSpeed : this.speed
     const sin = Math.sin(this.yaw)
     const cos = Math.cos(this.yaw)
     // yaw 0 faces north (-z); positive yaw turns left (counter-clockwise from above).
-    this.camera.position.x += (-sin * fwd + cos * side) * speed
-    this.camera.position.z += (-cos * fwd - sin * side) * speed
-    const gy = groundY(this.terrain, this.camera.position, EYE_HEIGHT)
-    if (gy != null) this.camera.position.y += (gy - this.camera.position.y) * Math.min(1, dt * 12)
-    this.camera.quaternion.setFromEuler(new Euler(this.pitch, this.yaw, 0, 'YXZ'))
+    const tx = ((-sin * fwd + cos * side) / len) * speed
+    const tz = ((-cos * fwd - sin * side) / len) * speed
+    // Ease toward the target velocity; less control in the air.
+    const ease = Math.min(1, dt * (this.airborne ? 2 : 10))
+    this.vel.x += (tx - this.vel.x) * ease
+    this.vel.z += (tz - this.vel.z) * ease
+    this.pos.x += this.vel.x * dt
+    this.pos.z += this.vel.z * dt
+    if (this.collide) [this.pos.x, this.pos.z] = this.collide(this.pos.x, this.pos.z, 0.4)
+
+    const gy = groundY(this.terrain, this.pos, EYE_HEIGHT)
+    if (this.airborne) {
+      this.vy -= 9.8 * dt
+      this.pos.y += this.vy * dt
+      if (gy != null && this.pos.y <= gy) {
+        this.pos.y = gy
+        this.vy = 0
+        this.airborne = false
+      }
+    } else if (gy != null) {
+      this.pos.y += (gy - this.pos.y) * Math.min(1, dt * 12)
+    }
+
+    // Head bob scaled by walking speed, settling when standing still.
+    const moving = Math.hypot(this.vel.x, this.vel.z)
+    this.bob += dt * moving * 2.6
+    const amp = this.airborne ? 0 : Math.min(moving / this.speed, 1.4) * 0.035
+    this.camera.position.set(this.pos.x, this.pos.y + Math.sin(this.bob) * amp, this.pos.z)
+    this.camera.quaternion.setFromEuler(new Euler(this.pitch + Math.cos(this.bob * 0.5) * amp * 0.08, this.yaw, 0, 'YXZ'))
   }
 }

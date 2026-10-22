@@ -1,8 +1,10 @@
 # Nampa weather viewer
 
-A browser 3D view of Nampa, Idaho, built toward the plan in
-[`../feasibility/earth-weather-viewer.md`](../feasibility/earth-weather-viewer.md) (§1a).
+A browser 3D view of Nampa, Idaho, heading toward a live weather simulation:
+real radar, wind and cloud data driving rain, snow, fog, clouds and lightning.
 It is a static site: everything runs in the browser, with no server code.
+
+**Live:** https://saxton-network.github.io/nampa-weather/
 
 **Status: Phase 1** (terrain, imagery, buildings, camera, sky). Radar and weather come next.
 

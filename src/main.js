@@ -1,6 +1,7 @@
 import './style.css'
 import { PerspectiveCamera, Scene, Timer, Vector3, WebGLRenderer } from 'three'
 import { Buildings } from './buildings.js'
+import { Lamps } from './lamps.js'
 import { BRANDS, Cameras, cardinal, describeCamera } from './cameras.js'
 import { DroneControls, WalkControls, cameraHeading, groundHeightBelow } from './controls.js'
 import { geodeticToLocal } from './geo.js'
@@ -60,14 +61,19 @@ const walk = new WalkControls(camera, renderer.domElement, terrain)
 walk.collide = (x, z, r) => buildings.collide(x, z, r)
 let mode = 'drone'
 
-// The scene is a frozen snapshot with one fixed sun: a mid-July late
-// afternoon, low enough for long shadows and warm light.
-// ?sun=<ISO time> overrides it, for checking lighting and shadows.
-const sunParam = params.get('sun') && new Date(params.get('sun'))
-const SUN_TIME = sunParam && !Number.isNaN(sunParam.getTime()) ? sunParam : new Date(region.snapshot.sunTime)
-sky.setDate(SUN_TIME)
+// The scene is a frozen moment: Halloween night, 1:30 am on Nov 1 2026, lit
+// by the real 58%-lit waning moon. ?time=<ISO time> overrides it (for
+// checking lighting); ?exposure= sets the brightness.
+const timeParam = params.get('time') && new Date(params.get('time'))
+const SCENE_TIME = timeParam && !Number.isNaN(timeParam.getTime()) ? timeParam : new Date(region.snapshot.time)
+sky.setDate(SCENE_TIME)
+const NIGHT_EXPOSURE = 2.2
+if (!params.has('exposure')) renderer.toneMappingExposure = sky.isNight ? NIGHT_EXPOSURE : 10
 const shadows = new SunShadows(renderer, lowQuality ? 1024 : 2048)
-shadows.setSun(sky.aerial.sunDirection)
+shadows.setSun(sky.aerial.sunDirection) // the moon, at night
+const lamps = new Lamps(roads, terrain)
+lamps.visible = sky.isNight
+scene.add(lamps.group)
 
 const ui = new UI({
   presets: PRESETS,
@@ -248,6 +254,7 @@ function frame(timestamp) {
   terrain.update(camera)
   buildings.update(camera.position, agl)
   trees.update(camera.position, agl)
+  if (agl < 300) lamps.update(camera.position)
   // Shadows cover a box around where you are looking from, sized to the view.
   if (agl < 1500) {
     const center = mode === 'walk' ? camera.position : drone.controls.target
@@ -294,7 +301,7 @@ function frame(timestamp) {
       below
         ? `cam ${below.lat.toFixed(5)}, ${below.lon.toFixed(5)}   ${below.msl.toFixed(0)} m MSL   ${below.agl.toFixed(1)} m AGL`
         : 'cam (terrain not loaded)',
-      `sun elevation ${sky.sunElevation.toFixed(1)}°   exposure ${renderer.toneMappingExposure}`,
+      `${sky.isNight ? 'night, moonlit' : 'day'}   sun ${sky.sunElevation.toFixed(1)}°   moon ${sky.moonElevation.toFixed(1)}°   exposure ${renderer.toneMappingExposure}   lamps ${lamps.count}`,
       `terrain tiles ${ts.visible} shown / ${ts.loaded} loaded / ${ts.loading} loading / ${ts.queued} queued / ${ts.failed} failed`,
       `buildings ${bs.buildings} in ${bs.tiles} tiles (${bs.loading} loading)   trees ${trees.count}`,
       `cameras ${cameras.list.length} loaded, ${cameras.list.filter((c) => c.placedZoom >= 0).length} placed, ${cameras.shown ?? 0} pins`,

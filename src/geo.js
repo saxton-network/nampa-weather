@@ -59,6 +59,11 @@ export const WORLD_TO_ECEF = new Matrix4().makeBasis(EAST, UP, SOUTH).setPositio
 const tmp = new Vector3()
 const tmp2 = new Vector3()
 
+// Rotates an ECEF direction into the local frame (x east, y up, z south).
+export function ecefDirToLocal(d, out = new Vector3()) {
+  return out.set(d.dot(EAST), d.dot(UP), d.dot(SOUTH))
+}
+
 export function geodeticToLocal(lat, lon, h, out = new Vector3()) {
   geodeticToECEF(lat, lon, h, tmp).sub(ORIGIN_ECEF)
   return out.set(tmp.dot(EAST), tmp.dot(UP), -tmp.dot(NORTH))

@@ -22,18 +22,19 @@ overlay. That plan is parked; the camera overlay replaced it.
 | Street names | Overture Maps transportation (from OpenStreetMap) | 12,070 named road segments in `public/data/roads/`. Labels follow the roads in drone mode, stand at sign height in walk mode, and are hidden when a building blocks the view |
 | ALPR cameras | OpenStreetMap nodes tagged `surveillance:type=ALPR`, mapped by the [DeFlock](https://deflock.org) community | 253 cameras across the Treasure Valley in `public/data/cameras.json`, refreshed on every deploy and daily. Each camera gets a pole, a head per direction it faces and a translucent ground wedge showing what it points at, coloured by brand. Clickable pins cluster when zoomed out |
 | Facades | Generated from each building's Overture type and height | Walls get windows, doors and shopfronts from the building's type and height, drawn by a shader so they cost no geometry |
-| Shadows | Sun shadow map | Buildings and trees cast shadows on the ground, walls and each other within a box around the view |
-| Sky and light | [`@takram/three-atmosphere`](https://github.com/takram-design-engineering/three-geospatial) | Physically based sky and aerial haze, with the sun fixed at a mid-July late afternoon (`snapshot.sunTime` in `src/region.json`) for long shadows and warm light |
+| Shadows | Shadow map from the sun, or the moon at night | Buildings and trees cast shadows on the ground, walls and each other within a box around the view |
+| Sky and light | [`@takram/three-atmosphere`](https://github.com/takram-design-engineering/three-geospatial) and `src/night.js` | Frozen at Halloween night, 1:30 am on Nov 1 2026 (`snapshot.time` in `src/region.json`), after moonrise. The real 58%-lit waning gibbous moon, about 16° up in the east-northeast, lights the scene and casts the shadows; the moon disc shows its true phase, with stars, a cool night grade, lit windows and street lights |
+| Street lights | Generated along the street data | Lamp posts along residential and larger roads (every 36–55 m, alternating sides) with pools of light painted into the ground |
 | Engine | three.js 0.186 + postprocessing | Logarithmic depth buffer, SMAA |
 
-**The scene is a frozen snapshot with its own look.** Nothing photographic is
+**The scene is a frozen moment with its own look: Halloween night, lit by the moon.** Nothing photographic is
 shown: the ground, roads and trees are generated from what the aerial photos
 and map data say is there. Ground maps, terrain, buildings, streets and trees
 are all saved in the site itself, and the lighting never changes, so a
 visitor's browser makes no requests to outside servers. Only the camera
 locations are refreshed, at build time.
 
-![A Nampa neighbourhood: generated ground, trees and houses](docs/screenshots/neighborhood.jpg)
+![Downtown Nampa on Halloween night, under the waning moon](docs/screenshots/downtown-moon.jpg)
 
 ## Using it
 
@@ -50,7 +51,8 @@ URL parameters, handy for sharing a view:
 |---|---|
 | `view` | Camera preset: `overview`, `downtown`, `neighborhood`, `street`, `mountains` |
 | `quality` | `low` or `high` (default is `low` on touch devices) |
-| `exposure` | Tone-mapping exposure (default 10) |
+| `exposure` | Tone-mapping exposure (default 2.2 at night, 10 by day) |
+| `time` | Override the frozen moment (ISO 8601), e.g. `time=2026-07-15T23:30:00Z` for a summer evening; daylight and night lighting switch automatically |
 | `labels` | `0` hides street names |
 | `cameras` | `0` hides the plate-reader cameras |
 | `at` | `lat,lon[,distance,heading,pitch]`: open a drone view of any spot, e.g. `at=43.5797,-116.5622,150,45,-25` |
@@ -118,7 +120,7 @@ node tools/screenshot.mjs screenshots overview downtown street
 
 - **The ground types are automatic guesses.** The classifier reads colour and texture only, so some roofs, shadows and dry lawns land in the wrong type, and ground-type edges are only as fine as the 0.9 m photos. Roads, which come from map data, are exact.
 - **No collisions in walk mode.** You can walk through buildings.
-- **No shadows.** Buildings and trees cast none yet.
+- **The moon is drawn larger than life** (about 2.5x) so it reads on screen, and the stars are a generated field, not real constellations.
 - **Building heights are mostly machine-learning estimates** from Overture/Microsoft, and the roof shapes are guesses for houses.
 - **The ground is a snapshot.** It reflects whenever NAIP last flew Idaho, and new construction since then is missing. Rerun the two snapshot scripts to refresh it.
 - **The camera map is crowd-sourced.** Cameras that nobody has mapped are missing, and the wedges are a fixed 30 m long and 40° wide, an approximation of what a plate reader covers.

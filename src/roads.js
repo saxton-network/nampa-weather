@@ -5,6 +5,7 @@
 //   R  asphalt coverage
 //   G  0.5 = sidewalk or path; inside asphalt, values above 0.5 are yellow paint
 //   B  white paint
+//   A  1 minus street-light glow (pools of light used at night)
 // Markings stop short of segment ends so they don't run through intersections.
 
 import { shortName } from './streets.js'
@@ -16,12 +17,12 @@ const BASE = import.meta.env.BASE_URL
 const KIND = [
   { name: 'motorway', w: 11.5, lines: 'motorway' },
   { name: 'trunk', w: 11.5, lines: 'motorway' },
-  { name: 'primary', w: 14, walk: true, lines: 'double' },
-  { name: 'secondary', w: 12, walk: true, lines: 'double' },
-  { name: 'tertiary', w: 10, walk: true, lines: 'dashed' },
-  { name: 'residential', w: 8.5, walk: true },
+  { name: 'primary', w: 14, walk: true, lines: 'double', lamps: 36 },
+  { name: 'secondary', w: 12, walk: true, lines: 'double', lamps: 38 },
+  { name: 'tertiary', w: 10, walk: true, lines: 'dashed', lamps: 42 },
+  { name: 'residential', w: 8.5, walk: true, lamps: 55 },
   { name: 'unclassified', w: 7 },
-  { name: 'living_street', w: 6, walk: true },
+  { name: 'living_street', w: 6, walk: true, lamps: 45 },
   { name: 'service', w: 5 },
   { name: 'driveway', w: 3.5 },
   { name: 'parking_aisle', w: 6.5 },
@@ -137,10 +138,45 @@ function addPath(ctx, pts) {
   for (let k = 1; k < pts.length; k++) ctx.lineTo(pts[k][0], pts[k][1])
 }
 
+// Street lights along a road tile's segments: [x, z, side_x, side_z] in local
+// metres (side = unit vector from the lamp toward the road). Generated from
+// the segment geometry, so the ground glow and the lamp posts always agree.
+export function lampsFor(tile) {
+  if (tile.lamps) return tile.lamps
+  const out = []
+  for (const s of tile.segs) {
+    const k = KIND[s[2]]
+    if (!k?.lamps) continue
+    const pts = points(tile, s)
+    let run = 0
+    let next = k.lamps / 2
+    let n = 0
+    for (let i = 1; i < pts.length; i++) {
+      const [x0, z0] = pts[i - 1]
+      const [x1, z1] = pts[i]
+      const len = Math.hypot(x1 - x0, z1 - z0)
+      if (len < 1e-3) continue
+      const dx = (x1 - x0) / len
+      const dz = (z1 - z0) / len
+      while (next <= run + len) {
+        const t = next - run
+        const side = n++ % 2 ? 1 : -1
+        const off = k.w / 2 + 1.0
+        // Right-hand normal is (-dz, dx); lamps alternate sides of the road.
+        out.push([x0 + dx * t - dz * off * side, z0 + dz * t + dx * off * side, dz * side, -dx * side])
+        next += k.lamps
+      }
+      run += len
+    }
+  }
+  tile.lamps = out
+  return out
+}
+
 // Paints all roads from `tiles` onto ctx. `toCanvas` is the affine
 // [a, b, c, d, e, f] mapping local (x, z) metres to canvas pixels;
 // `markings` turns lane paint on (only worth it on close-up tiles).
-export function drawRoads(ctx, size, toCanvas, tiles, markings) {
+export function drawRoads(ctx, size, toCanvas, tiles, markings, glow) {
   ctx.setTransform(1, 0, 0, 1, 0, 0)
   ctx.globalCompositeOperation = 'source-over'
   ctx.fillStyle = '#000'
@@ -178,6 +214,24 @@ export function drawRoads(ctx, size, toCanvas, tiles, markings) {
     ctx.beginPath()
     for (const pts of lines) addPath(ctx, pts)
     ctx.stroke()
+  }
+  if (glow) {
+    // Pools of light: cut alpha around each lamp (kept above 0.2 so the
+    // colour channels survive the canvas's premultiplied storage).
+    ctx.globalCompositeOperation = 'destination-out'
+    for (const t of tiles) {
+      for (const [x, z, sx, sz] of lampsFor(t)) {
+        const cx = x + sx * 2.5
+        const cz = z + sz * 2.5
+        const g = ctx.createRadialGradient(cx, cz, 0, cx, cz, 9)
+        g.addColorStop(0, 'rgba(0,0,0,0.7)')
+        g.addColorStop(0.35, 'rgba(0,0,0,0.3)')
+        g.addColorStop(1, 'rgba(0,0,0,0)')
+        ctx.fillStyle = g
+        ctx.fillRect(cx - 9, cz - 9, 18, 18)
+      }
+    }
+    ctx.globalCompositeOperation = 'lighter'
   }
   if (!markings) return
 

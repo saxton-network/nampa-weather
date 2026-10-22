@@ -1,6 +1,7 @@
 // Loads Overture building tiles near the camera and meshes them in a worker.
 
-import { BufferAttribute, BufferGeometry, Group, Mesh, MeshBasicMaterial } from 'three'
+import { BufferAttribute, BufferGeometry, Group, Mesh, MeshBasicMaterial, NoBlending } from 'three'
+import { NIGHT_UNIFORMS } from './night.js'
 import { receiveShadows } from './shadows.js'
 
 const BASE = import.meta.env.BASE_URL
@@ -34,6 +35,10 @@ const FACADE_FRAGMENT = /* glsl */ `
     float glass = 0.0;
     float frame = 0.0;
     float door = 0.0;
+    float lit = 0.0;
+    // Share of windows with lights on at night: few in homes at this hour,
+    // most shopfronts, some apartments and offices.
+    float litShare = house ? 0.12 : (shop ? 0.6 : 0.22);
     if (n >= 1.0 && v > 0.0) {
       float margin = (wallLen - n * spacing) * 0.5;
       float cu = (u - margin) / spacing;
@@ -58,6 +63,10 @@ const FACADE_FRAGMENT = /* glsl */ `
       }
       glass = inner;
       frame = outer - inner;
+      // Rounded so tiny interpolation differences can't flip a window on and off.
+      float wallId = floor(wallLen * 10.0 + 0.5);
+      float h = fract(sin(dot(vec3(cell, fl, mod(wallId, 997.0)), vec3(12.9898, 78.233, 37.719))) * 43758.5453);
+      lit = step(h, litShare) * glass;
     }
     vec3 wall = diffuseColor.rgb;
     float sky = clamp(fract(v / floorH) * 1.4, 0.0, 1.0);
@@ -71,6 +80,13 @@ const FACADE_FRAGMENT = /* glsl */ `
     // Darker plinth along the ground.
     c *= mix(0.72, 1.0, smoothstep(-0.1, 0.4, v));
     diffuseColor.rgb = c;
+    // At night lit windows glow (alpha below 1, see night.js); from afar
+    // they average into a faint glow over the wall.
+    if (nightLights > 0.5) {
+      float glowNear = lit * detail;
+      float glowFar = litShare * 0.3 * step(1.0, n) * (1.0 - detail);
+      diffuseColor.a = 1.0 - (glowNear + glowFar) * 0.9;
+    }
   }
 }
 `
@@ -143,10 +159,12 @@ export class Buildings {
   constructor({ maxConcurrent = 4 } = {}) {
     this.group = new Group()
     this.group.name = 'buildings'
-    this.material = new MeshBasicMaterial({ vertexColors: true })
+    // NoBlending keeps the alpha we write (window glow marker, see night.js).
+    this.material = new MeshBasicMaterial({ vertexColors: true, blending: NoBlending })
     this.material.onBeforeCompile = (shader) => {
+      shader.uniforms.nightLights = NIGHT_UNIFORMS.nightLights
       shader.vertexShader = FACADE_VERTEX + shader.vertexShader.replace('#include <begin_vertex>', '#include <begin_vertex>\n  vFacade = facade;')
-      shader.fragmentShader = 'varying vec4 vFacade;\n' + shader.fragmentShader.replace('#include <color_fragment>', '#include <color_fragment>\n' + FACADE_FRAGMENT)
+      shader.fragmentShader = 'uniform float nightLights;\nvarying vec4 vFacade;\n' + shader.fragmentShader.replace('#include <color_fragment>', '#include <color_fragment>\n' + FACADE_FRAGMENT)
     }
     receiveShadows(this.material)
     this.tiles = new Map() // "i_j" -> { state, mesh, count }

@@ -4,6 +4,7 @@
 // with distance. Output is unlit albedo; the atmosphere pass lights it.
 
 import { Color, DataTexture, NearestFilter, ShaderMaterial, Vector4 } from 'three'
+import { NIGHT_UNIFORMS } from './night.js'
 import { SHADOW_GLSL, SHADOW_UNIFORMS } from './shadows.js'
 
 // Ground types, same ids as build_landcover.py. Two colours per type (sRGB),
@@ -50,6 +51,7 @@ uniform sampler2D classMap;
 uniform vec4 classXform; // xy offset, zw scale into the ground-type map
 uniform sampler2D roadMap;
 uniform float hasRoads;
+uniform float nightLights;
 varying vec2 vUv;
 varying vec3 vPos;
 ${SHADOW_GLSL}
@@ -130,8 +132,10 @@ void main() {
     f.y
   );
 
+  float glow = 0.0;
   if (hasRoads > 0.5) {
     vec4 r = texture2D(roadMap, vUv);
+    glow = (1.0 - r.a) * nightLights;
     float asphalt = smoothstep(0.3, 0.7, r.r);
     float side = smoothstep(0.2, 0.45, r.g) * (1.0 - asphalt);
     float yellow = clamp((r.g - 0.5) * 2.2, 0.0, 1.0) * asphalt;
@@ -145,7 +149,8 @@ void main() {
   }
   col *= 0.88 + 0.24 * grit;
   col *= sunShade(vPos);
-  gl_FragColor = vec4(col, 1.0);
+  // Alpha below 1 marks street-light glow for the night effect (night.js).
+  gl_FragColor = vec4(col, 1.0 - glow * 0.55);
 }
 `
 
@@ -162,13 +167,14 @@ const base = new ShaderMaterial({
     classXform: { value: new Vector4(0, 0, 1, 1) },
     roadMap: { value: NO_ROADS },
     hasRoads: { value: 0 },
-    ...SHADOW_UNIFORMS
+    ...SHADOW_UNIFORMS,
+    ...NIGHT_UNIFORMS
   }
 })
 
 export function groundMaterial({ classMap, classXform, roadMap }) {
   const m = base.clone() // shares the compiled program
-  Object.assign(m.uniforms, SHADOW_UNIFORMS) // shared objects, so updates reach every tile
+  Object.assign(m.uniforms, SHADOW_UNIFORMS, NIGHT_UNIFORMS) // shared objects, so updates reach every tile
   m.uniforms.classMap.value = classMap
   m.uniforms.classXform.value.copy(classXform)
   if (roadMap) {

@@ -328,7 +328,7 @@ export class Terrain {
     const b = (-size * e1z) / det, d = (size * e1x) / det
     const canvas = new OffscreenCanvas(size, size)
     const ctx = canvas.getContext('2d')
-    drawRoads(ctx, size, [a, b, c, d, -(a * nw.x + c * nw.z), -(b * nw.x + d * nw.z)], tiles, tile.z >= 18)
+    drawRoads(ctx, size, [a, b, c, d, -(a * nw.x + c * nw.z), -(b * nw.x + d * nw.z)], tiles, tile.z >= 18, tile.z >= 15)
     const texture = new CanvasTexture(canvas)
     texture.flipY = false
     texture.wrapS = texture.wrapT = ClampToEdgeWrapping

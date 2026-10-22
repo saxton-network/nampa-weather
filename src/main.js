@@ -6,8 +6,10 @@ import { DroneControls, WalkControls, cameraHeading, groundHeightBelow } from '.
 import { geodeticToLocal } from './geo.js'
 import region from './region.json'
 import { Sky } from './sky.js'
+import { RoadTiles } from './roads.js'
 import { Streets } from './streets.js'
 import { Terrain } from './terrain.js'
+import { Trees } from './trees.js'
 import { UI } from './ui.js'
 
 const params = new URLSearchParams(location.search)
@@ -39,13 +41,17 @@ document.body.append(renderer.domElement)
 const scene = new Scene()
 const camera = new PerspectiveCamera(55, innerWidth / innerHeight, 0.5, 400000)
 
+const roads = new RoadTiles()
 const terrain = new Terrain(renderer, {
+  roads,
   sseThreshold: lowQuality ? 1.6 : 1.0,
   maxTiles: lowQuality ? 350 : 700
 })
 scene.add(terrain.group)
 const buildings = new Buildings()
 scene.add(buildings.group)
+const trees = new Trees()
+scene.add(trees.group)
 const sky = new Sky(renderer, scene, camera)
 
 const drone = new DroneControls(camera, renderer.domElement, terrain)
@@ -67,7 +73,7 @@ const ui = new UI({
   onLabels: (on) => (streets.visible = on),
   onCameras: (on) => (cameras.visible = on)
 })
-const streets = new Streets(ui.root)
+const streets = new Streets(ui.root, roads)
 if (params.get('labels') === '0') {
   streets.visible = false
   ui.labelsBox.checked = false
@@ -186,7 +192,12 @@ function applyPreset(p) {
   }
 }
 
-applyPreset(PRESETS[params.get('view')] ?? PRESETS.overview)
+// ?at=lat,lon[,distance,heading,pitch] opens a drone view of any spot.
+const at = params.get('at')?.split(',').map(Number)
+const atView = at?.length >= 2 && at.every(Number.isFinite)
+  ? { lat: at[0], lon: at[1], distance: at[2] ?? 150, heading: at[3] ?? 0, pitch: at[4] ?? -30 }
+  : null
+applyPreset(atView ?? PRESETS[params.get('view')] ?? PRESETS.overview)
 ui.setMode(mode)
 
 addEventListener('resize', () => {
@@ -209,7 +220,7 @@ const fps = { frames: 0, last: performance.now(), value: 0, ms: 0 }
 let idleFrames = 0
 let lastHere = 0
 // Exposed for tools/screenshot.mjs and for poking at things from the console.
-window.__nampa = { ready: false, camera, terrain: () => terrain, buildings, streets, cameras, sky }
+window.__nampa = { ready: false, camera, terrain: () => terrain, buildings, streets, cameras, trees, sky }
 
 function frame(timestamp) {
   timer.update(timestamp)
@@ -228,6 +239,7 @@ function frame(timestamp) {
 
   terrain.update(camera)
   buildings.update(camera.position, agl)
+  trees.update(camera.position, agl)
   sky.render(dt)
   streets.update(camera, { mode, agl, width: innerWidth, height: innerHeight, occluded: occludedByBuildings })
   cameras.update(camera, { mode, agl, width: innerWidth, height: innerHeight })
@@ -246,7 +258,7 @@ function frame(timestamp) {
     ui.setHere(street, walking ? 'On' : 'Near', camText)
   }
 
-  const busy = terrain.loading + terrain.needed.size + buildings.loading + streets.loading + (cameras.visible ? cameras.pending : 0)
+  const busy = terrain.loading + terrain.needed.size + buildings.loading + streets.loading + trees.loading + (cameras.visible ? cameras.pending : 0)
   idleFrames = busy === 0 && sky.ready ? idleFrames + 1 : 0
   window.__nampa.ready = idleFrames > 30
 
@@ -268,7 +280,7 @@ function frame(timestamp) {
         : 'cam (terrain not loaded)',
       `sun elevation ${sky.sunElevation.toFixed(1)}°   exposure ${renderer.toneMappingExposure}`,
       `terrain tiles ${ts.visible} shown / ${ts.loaded} loaded / ${ts.loading} loading / ${ts.queued} queued / ${ts.failed} failed`,
-      `buildings ${bs.buildings} in ${bs.tiles} tiles (${bs.loading} loading)`,
+      `buildings ${bs.buildings} in ${bs.tiles} tiles (${bs.loading} loading)   trees ${trees.count}`,
       `cameras ${cameras.list.length} loaded, ${cameras.list.filter((c) => c.placedZoom >= 0).length} placed, ${cameras.shown ?? 0} pins`,
       `street labels ${streets.shown ?? 0} shown, ${[...streets.tiles.values()].filter((t) => typeof t === 'object').length} tiles loaded`,
       `draw calls ${info.calls}   triangles ${(info.triangles / 1e6).toFixed(2)} M`,
@@ -276,7 +288,8 @@ function frame(timestamp) {
       terrain.lastError ? `last tile error: ${terrain.lastError}` : '',
       buildings.lastError ? `last building error: ${buildings.lastError}` : '',
       streets.lastError ? `last street error: ${streets.lastError}` : '',
-      cameras.lastError ? `last camera error: ${cameras.lastError}` : ''
+      cameras.lastError ? `last camera error: ${cameras.lastError}` : '',
+      trees.lastError ? `last tree error: ${trees.lastError}` : ''
     ].filter(Boolean))
   }
   requestAnimationFrame(frame)

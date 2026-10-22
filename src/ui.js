@@ -162,6 +162,46 @@ export class UI {
           : 'Drag to pan · right-drag to rotate · scroll to zoom'
   }
 
+  setHeading(deg) {
+    this.rose.setAttribute('transform', `rotate(${(-deg).toFixed(1)})`)
+    // Keep the letters upright while the rose turns.
+    for (const t of this.letters) {
+      t.setAttribute('transform', `rotate(${deg.toFixed(1)} ${t.getAttribute('x')} ${t.getAttribute('y')})`)
+    }
+    const names = ['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW']
+    this.headingText.textContent = `${names[Math.round(deg / 45) % 8]} ${Math.round(deg) % 360}°`
+  }
+
+  // street: { short } or null; prefix: 'On' or 'Near'; extra: optional suffix.
+  setHere(street, prefix, extra) {
+    const parts = [street ? `${prefix} ${street.short}` : null, extra].filter(Boolean)
+    this.here.hidden = !parts.length
+    this.here.textContent = parts.join('  ·  ')
+  }
+
+  setCameraCount(text) {
+    this.cameraCount.textContent = text
+  }
+
+  // info: { title, color, rows: [[label, value]] }; actions: [[label, fn] | [label, url, 'link']]
+  showCard(info, actions) {
+    this.cardTitle.textContent = info.title
+    this.cardTitle.style.setProperty('--dot', info.color)
+    this.cardRows.replaceChildren(...info.rows.flatMap(([k, val]) => [el('dt', {}, k), el('dd', {}, val)]))
+    this.cardActions.replaceChildren(
+      ...actions.map(([label, target, kind]) =>
+        kind === 'link'
+          ? el('a', { href: target, target: '_blank', rel: 'noopener' }, label)
+          : el('button', { onclick: target }, label)
+      )
+    )
+    this.card.hidden = false
+  }
+
+  hideCard() {
+    this.card.hidden = true
+  }
+
   setCredits(lines) {
     this.credits.textContent = lines.filter(Boolean).join(' · ')
   }

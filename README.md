@@ -14,7 +14,9 @@ overlay. That plan is parked; the camera overlay replaced it.
 
 | Piece | Source | Notes |
 |---|---|---|
-| Imagery | USDA NAIP aerial photos via the USGS National Map (public domain) | Snapshot saved in `public/tiles/imagery/`: about 0.9 m per pixel (z17) over Nampa, 7 m (z14) across the Treasure Valley, 38 m (z12) out to the mountains |
+| Ground | Generated. Ground types are classified from USDA NAIP aerial photos (public domain) and corrected with Overture water, land use and land cover | `public/tiles/landcover/`: one ground type per pixel (lawn, trees, dry scrub, dirt, asphalt, concrete, water, crops, plowed field, sand, pool) at about 0.9 m (z17) over Nampa, 7 m across the Treasure Valley, 38 m out to the mountains. A shader paints each type with procedural detail that stays sharp up close. The photos themselves are not shipped |
+| Roads on the ground | Overture transportation (OpenStreetMap) | Every road, driveway, parking aisle, alley and path is painted into the ground at a width set by its type, with sidewalks, yellow centre lines and white edge and lane lines |
+| Trees | Seeded wherever the photos show canopy | Low-poly round trees and conifers, about 8 m apart, kept off roads, buildings and water, in `public/data/trees/`. Drawn within about 1 km below 600 m altitude |
 | Terrain | [AWS Terrain Tiles](https://registry.opendata.aws/terrain-tiles/) (terrarium encoding, USGS 3DEP) | Snapshot saved in `public/tiles/elevation/`: about 3.5 m (z15) over Nampa, coarser beyond. Streamed as a quadtree with Earth curvature built in |
 | Buildings | [Overture Maps](https://overturemaps.org/) buildings, release 2026-10-21.0 | 77,803 buildings, pre-cut into 1 km tiles in `public/data/buildings/`, meshed in a Web Worker. Houses get gable or hip roofs |
 | Street names | Overture Maps transportation (from OpenStreetMap) | 12,070 named road segments in `public/data/roads/`. Labels follow the roads in drone mode, stand at sign height in walk mode, and are hidden when a building blocks the view |
@@ -22,10 +24,12 @@ overlay. That plan is parked; the camera overlay replaced it.
 | Sky and light | [`@takram/three-atmosphere`](https://github.com/takram-design-engineering/three-geospatial) | Physically based sky and aerial haze, with the sun fixed at a summer early afternoon (`snapshot.sunTime` in `src/region.json`) to match the aerial photos |
 | Engine | three.js 0.186 + postprocessing | Logarithmic depth buffer, SMAA |
 
-**The scene is a frozen snapshot.** Imagery, terrain, buildings and streets are
-all saved in the site itself, and the lighting never changes, so a visitor's
-browser makes no requests to outside servers. Only the camera locations are
-refreshed, at build time.
+**The scene is a frozen snapshot with its own look.** Nothing photographic is
+shown: the ground, roads and trees are generated from what the aerial photos
+and map data say is there. Ground maps, terrain, buildings, streets and trees
+are all saved in the site itself, and the lighting never changes, so a
+visitor's browser makes no requests to outside servers. Only the camera
+locations are refreshed, at build time.
 
 ![Plate-reader cameras over Nampa](docs/screenshots/cameras-overview.jpg)
 
@@ -47,6 +51,7 @@ URL parameters, handy for sharing a view:
 | `exposure` | Tone-mapping exposure (default 10) |
 | `labels` | `0` hides street names |
 | `cameras` | `0` hides the plate-reader cameras |
+| `at` | `lat,lon[,distance,heading,pitch]`: open a drone view of any spot, e.g. `at=43.5797,-116.5622,150,45,-25` |
 | `camera` | An OpenStreetMap node id: fly to that camera and open its card |
 | `debug` | Open the debug panel |
 
@@ -68,15 +73,23 @@ npm run build      # static site in dist/, deployable to any web server
 python3 -I data-prep/build_buildings.py   # public/data/buildings/
 python3 -I data-prep/build_roads.py       # public/data/roads/
 python3 -I data-prep/build_cameras.py     # public/data/cameras.json
-python3 -I data-prep/build_snapshot.py    # public/tiles/ (imagery and elevation)
+python3 -I data-prep/build_snapshot.py    # elevation + NAIP photos (photos stay in data-prep/.cache)
+python3 -I data-prep/build_landcover.py   # public/tiles/landcover/, public/data/trees/, coverage.json
 ```
 
-`build_snapshot.py` exports NAIP from the USGS image service in 3,840 px blocks
-and cuts them into WebP tiles, and re-encodes the AWS elevation tiles as
-lossless WebP (heights rounded to 1/8 m). Which zooms cover which area is set
-by `snapshot` in `src/region.json`; the script writes `public/tiles/coverage.json`,
-which tells the viewer which tiles exist. A full run takes about half an hour
-and can be restarted where it stopped.
+`build_snapshot.py` exports NAIP from the USGS image service in blocks of up
+to 3,840 px (splitting a block when the service times out) and cuts them into
+tiles in `data-prep/.cache/naip-tiles/`, and re-encodes the AWS elevation tiles
+as lossless WebP in `public/tiles/elevation/` (heights rounded to 1/8 m). Which
+zooms cover which area is set by `snapshot` in `src/region.json`. A full run can
+take an hour when the USGS service is busy, and can be restarted where it stopped.
+
+`build_landcover.py` sorts every photo pixel into a ground type by colour and
+local texture, using Overture land cover to tell town from fields and natural
+ground, burns in Overture water, canals, pools, farmland and golf features,
+fills shadows from their surroundings, and clears photographed asphalt along
+roads the viewer paints itself. It also seeds the trees. It writes
+`public/tiles/coverage.json`, which tells the viewer which tiles exist.
 
 `build_cameras.py` uses only the standard library. It reads the nationwide feed
 behind [DeFlock's map](https://maps.deflock.org) (built from OpenStreetMap) and
@@ -101,17 +114,17 @@ node tools/screenshot.mjs screenshots overview downtown street
 
 ## Known limits
 
-- **Eye level is blurry.** The saved imagery is about 0.9 m per pixel over Nampa and much coarser outside it, so the ground smears when seen from 1.7 m.
+- **The ground types are automatic guesses.** The classifier reads colour and texture only, so some roofs, shadows and dry lawns land in the wrong type, and ground-type edges are only as fine as the 0.9 m photos. Roads, which come from map data, are exact.
 - **No collisions in walk mode.** You can walk through buildings.
-- **No shadows.** The imagery has its own baked-in shadows; buildings cast none yet.
+- **No shadows.** Buildings and trees cast none yet.
 - **Building heights are mostly machine-learning estimates** from Overture/Microsoft, and the roof shapes are guesses for houses.
-- **The imagery is a snapshot.** It shows whenever NAIP last flew Idaho, and new construction since then is missing. Rerun `build_snapshot.py` to refresh it.
+- **The ground is a snapshot.** It reflects whenever NAIP last flew Idaho, and new construction since then is missing. Rerun the two snapshot scripts to refresh it.
 - **The camera map is crowd-sourced.** Cameras that nobody has mapped are missing, and the wedges are a fixed 30 m long and 40° wide, an approximation of what a plate reader covers.
 - **Mobile is untested on real hardware.** Touch devices default to `quality=low` (fewer tiles, lower pixel ratio).
 
 ## Credits
 
-Imagery: USDA NAIP via USGS The National Map (public domain) ·
+Ground generated from USDA NAIP via USGS The National Map (public domain) ·
 Terrain: USGS 3DEP via AWS Terrain Tiles ·
 Buildings © Overture Maps Foundation, © OpenStreetMap contributors, Microsoft, Esri Community Maps ·
 ALPR locations © OpenStreetMap contributors, mapped by the DeFlock community ·

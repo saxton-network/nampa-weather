@@ -15,7 +15,8 @@
   "terrain": {
     "rootZoom": 9,
     "rootRadiusTiles": 1,
-    "maxElevationZoom": 15
+    "maxElevationZoom": 15,
+    "maxZoom": 19
   },
   "cameraBbox": {
     "west": -117.3,

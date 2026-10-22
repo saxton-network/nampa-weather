@@ -5,10 +5,12 @@ Output: public/data/roads/index.json plus one <i>_<j>.json per 1 km tile (same
 grid as the buildings), each holding:
   names:   the street names used in the tile
   anchors: label positions [x_dm, z_dm, y_dm, angle_deg10, name_index, rank]
-  segs:    road centrelines [name_index, rank, x0_dm, z0_dm, x1_dm, z1_dm, ...]
+  segs:    road centrelines [name_index, rank, kind, x0_dm, z0_dm, x1_dm, z1_dm, ...]
 x/z are decimetres from the tile origin; y is the local-frame height of the
 road surface in decimetres; angle is the road direction in the x-z plane.
-rank orders roads by importance (0 = motorway ... 5 = service).
+rank orders roads by importance (0 = motorway ... 5 = service). segs include
+unnamed roads and paths (name_index -1) so the ground can draw every road;
+kind is an index into KINDS below, which sets width and markings in the viewer.
 
 Run: python3 -I data-prep/build_roads.py   (from the repository root)
 """
@@ -36,8 +38,29 @@ RANK = {
     "residential": 4, "unclassified": 4, "living_street": 4, "unknown": 4,
     "service": 5, "pedestrian": 5, "track": 5,
 }
+# Order matters: the viewer's ground shader indexes this list (src/roads.js).
+KINDS = ["motorway", "trunk", "primary", "secondary", "tertiary", "residential", "unclassified",
+         "living_street", "service", "driveway", "parking_aisle", "alley", "track", "pedestrian", "path"]
+PATHS = {"footway", "cycleway", "path", "steps", "bridleway"}
 MIN_LABEL_LENGTH = 30  # m; shorter named segments get no label of their own
 LABEL_SPACING = 200  # m between labels along long segments
+
+
+def road_kind(row):
+    cls, sub = row["class"], row.get("subclass")
+    if cls in PATHS:
+        return None if sub == "sidewalk" else KINDS.index("path")
+    if cls == "service" and sub in ("driveway", "parking_aisle", "alley"):
+        return KINDS.index(sub)
+    if cls in KINDS:
+        return KINDS.index(cls)
+    if cls == "unknown":
+        return KINDS.index("unclassified")
+    return None
+
+
+def is_tunnel(row):
+    return any("is_tunnel" in (f.get("values") or []) for f in row.get("road_flags") or [])
 
 
 def road_name(row):
@@ -67,7 +90,7 @@ def main():
         & (pc.field("bbox", "xmax") > bbox["west"]) & (pc.field("bbox", "xmin") < bbox["east"])
         & (pc.field("bbox", "ymax") > bbox["south"]) & (pc.field("bbox", "ymin") < bbox["north"])
     )
-    rows = dataset.to_table(columns=["class", "names", "routes", "geometry"], filter=filt).to_pylist()
+    rows = dataset.to_table(columns=["class", "subclass", "names", "routes", "road_flags", "geometry"], filter=filt).to_pylist()
     print(f"overture {OVERTURE_RELEASE}: {len(rows)} road segments ({time.time() - t0:.0f}s)", flush=True)
 
     tiles = {}
@@ -88,10 +111,11 @@ def main():
 
     kept = 0
     for r in rows:
-        rank = RANK.get(r["class"])
-        name = road_name(r)
-        if rank is None or not name:
+        kind = road_kind(r)
+        if kind is None or is_tunnel(r):
             continue
+        rank = RANK.get(r["class"], 5)
+        name = road_name(r) if r["class"] in RANK else None
         for line in parse_wkb_lines(r["geometry"]):
             pts = np.array(line).reshape(-1, 2)
             if len(pts) < 2:
@@ -106,11 +130,11 @@ def main():
             mid = len(x) // 2
             i, j, t = tile_for(float(x[mid]), float(z[mid]))
             ox, oz = i * size, j * size
-            k = name_index(t, name)
+            k = name_index(t, name) if name else -1
             coords = np.column_stack([np.round((x - ox) * 10), np.round((z - oz) * 10)]).astype(int).ravel().tolist()
-            t["segs"].append([k, rank] + coords)
+            t["segs"].append([k, rank, kind] + coords)
 
-            if total < MIN_LABEL_LENGTH:
+            if not name or total < MIN_LABEL_LENGTH:
                 continue
             n = max(1, round(total / LABEL_SPACING))
             cum = np.concatenate([[0], np.cumsum(seglen)])
@@ -145,10 +169,11 @@ def main():
             "source": f"Overture Maps Foundation transportation, release {OVERTURE_RELEASE}",
             "attribution": "Streets © OpenStreetMap contributors, Overture Maps Foundation",
             "tileSize": size,
+            "kinds": KINDS,
             "tiles": index,
         }, f, separators=(",", ":"))
     anchors = sum(n for *_, n in index)
-    print(f"wrote {kept} named segments, {anchors} label anchors in {len(index)} tiles ({time.time() - t0:.0f}s)")
+    print(f"wrote {kept} road segments, {anchors} label anchors in {len(index)} tiles ({time.time() - t0:.0f}s)")
 
 
 if __name__ == "__main__":

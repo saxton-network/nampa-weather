@@ -1,15 +1,18 @@
 // Streaming quadtree terrain: Web Mercator tiles meshed in the local frame.
 //
-// Imagery (USDA NAIP) and elevation (terrarium encoding, USGS 3DEP) are a
-// snapshot baked into public/tiles/ by data-prep/build_snapshot.py, so the
-// site serves its own tiles. tiles/coverage.json lists which zooms exist where;
-// a tile only splits when all four children exist, and uses the deepest
-// elevation tile available above it. A tile replaces its parent only once all
-// of its visible children have loaded, so the ground never has holes.
+// Elevation (terrarium encoding, USGS 3DEP) and ground-type maps (classified
+// from USDA NAIP photos) are a snapshot in public/tiles/, built by
+// data-prep/build_snapshot.py and build_landcover.py, so the site serves its
+// own tiles. tiles/coverage.json lists which zooms exist where. Each tile uses
+// the deepest elevation and ground-type tiles available above it, and gets a
+// road texture painted from the street data (roads.js); ground.js turns those
+// into the final colours. A tile replaces its parent only once all of its
+// visible children have loaded, so the ground never has holes.
 
 import {
   BufferAttribute,
   BufferGeometry,
+  CanvasTexture,
   ClampToEdgeWrapping,
   Frustum,
   Group,
@@ -17,12 +20,13 @@ import {
   LinearMipmapLinearFilter,
   Matrix4,
   Mesh,
-  MeshBasicMaterial,
-  SRGBColorSpace,
   Sphere,
   Texture,
-  Vector3
+  Vector3,
+  Vector4
 } from 'three'
+import { classTextureSettings, groundMaterial } from './ground.js'
+import { drawRoads } from './roads.js'
 import {
   geodeticToLocal,
   latToTileY,
@@ -205,8 +209,10 @@ class Tile {
 }
 
 export class Terrain {
-  constructor(renderer, { sseThreshold = 1.0, maxTiles = 700, maxConcurrent = 8 } = {}) {
+  constructor(renderer, { roads = null, sseThreshold = 1.0, maxTiles = 700, maxConcurrent = 8 } = {}) {
     this.renderer = renderer
+    this.roads = roads
+    this.classTextures = new Map() // "z/x/y" -> { promise, texture, refs }
     this.group = new Group()
     this.group.name = 'terrain'
     this.coverage = null
@@ -214,8 +220,11 @@ export class Terrain {
       .then((r) => r.json())
       .then((c) => {
         this.coverage = c
-        this.credits = [c.imageryCredit, c.elevationCredit]
-        this.maxImageryZoom = Math.max(...Object.keys(c.imagery).map(Number))
+        this.credits = [c.groundCredit, c.elevationCredit]
+        this.maxGroundZoom = Math.max(...Object.keys(c.landcover).map(Number))
+        // Tiles keep splitting past the ground maps' zoom near the camera, for
+        // finer mesh and sharper road paint at street level.
+        this.maxZoom = region.terrain.maxZoom
       })
       .catch((err) => {
         this.lastError = `coverage: ${err.message}`
@@ -256,13 +265,77 @@ export class Terrain {
     return !!r && x >= r[0] && x <= r[1] && y >= r[2] && y <= r[3]
   }
 
-  // Deepest available elevation tile at or above tile (z, x, y).
-  elevationSource(z, x, y) {
-    for (let ez = Math.min(z, this.maxElevationZoom); ez >= 0; ez--) {
-      const shift = z - ez
-      if (this.has('elevation', ez, x >> shift, y >> shift)) return [ez, x >> shift, y >> shift]
+  // Deepest available tile of `kind` at or above tile (z, x, y), up to maxZ.
+  source(kind, z, x, y, maxZ) {
+    for (let sz = Math.min(z, maxZ); sz >= 0; sz--) {
+      const shift = z - sz
+      if (this.has(kind, sz, x >> shift, y >> shift)) return [sz, x >> shift, y >> shift]
     }
     return null
+  }
+
+  elevationSource(z, x, y) {
+    return this.source('elevation', z, x, y, this.maxElevationZoom)
+  }
+
+  // Ground-type texture for (z, x, y), shared between the tiles that use it.
+  classTexture(z, x, y) {
+    const key = `${z}/${x}/${y}`
+    let entry = this.classTextures.get(key)
+    if (!entry) {
+      entry = { refs: 0, texture: null }
+      entry.promise = fetchBitmap(`${TILES}/landcover/${z}/${x}/${y}.png`).then((bitmap) => {
+        entry.texture = classTextureSettings(new Texture(bitmap))
+        return entry.texture
+      })
+      entry.promise.catch(() => this.classTextures.delete(key))
+      this.classTextures.set(key, entry)
+    }
+    entry.refs++
+    return { key, promise: entry.promise }
+  }
+
+  releaseClassTexture(key) {
+    const entry = this.classTextures.get(key)
+    if (!entry || --entry.refs > 0) return
+    this.classTextures.delete(key)
+    entry.texture?.source.data?.close?.()
+    entry.texture?.dispose()
+  }
+
+  // Paints the roads crossing this tile into a texture, or null if none do.
+  async roadTexture(tile) {
+    if (!this.roads || tile.z < 13) return null
+    await this.roads.ready
+    const h = (tile.heightRange[0] + tile.heightRange[1]) / 2
+    const nw = geodeticToLocal(tile.north, tile.west, h)
+    const ne = geodeticToLocal(tile.north, tile.east, h)
+    const sw = geodeticToLocal(tile.south, tile.west, h)
+    const se = geodeticToLocal(tile.south, tile.east, h)
+    const xs = [nw.x, ne.x, sw.x, se.x]
+    const zs = [nw.z, ne.z, sw.z, se.z]
+    const pad = 20
+    const keys = this.roads.keysIn(Math.min(...xs) - pad, Math.max(...xs) + pad, Math.min(...zs) - pad, Math.max(...zs) + pad)
+    if (!keys.length) return null
+    const tiles = (await Promise.all(keys.map((k) => this.roads.get(k).catch(() => null)))).filter(Boolean)
+    if (!tiles.length) return null
+    const size = tile.z >= 18 ? 512 : 256
+    // Affine map from local (x, z) to canvas pixels, from three tile corners.
+    const e1x = ne.x - nw.x, e1z = ne.z - nw.z
+    const e2x = sw.x - nw.x, e2z = sw.z - nw.z
+    const det = e1x * e2z - e2x * e1z
+    const a = (size * e2z) / det, c = (-size * e2x) / det
+    const b = (-size * e1z) / det, d = (size * e1x) / det
+    const canvas = new OffscreenCanvas(size, size)
+    const ctx = canvas.getContext('2d')
+    drawRoads(ctx, size, [a, b, c, d, -(a * nw.x + c * nw.z), -(b * nw.x + d * nw.z)], tiles, tile.z >= 18)
+    const texture = new CanvasTexture(canvas)
+    texture.flipY = false
+    texture.wrapS = texture.wrapT = ClampToEdgeWrapping
+    texture.minFilter = LinearMipmapLinearFilter
+    texture.magFilter = LinearFilter
+    texture.anisotropy = this.anisotropy
+    return texture
   }
 
   elevationTile(z, x, y) {
@@ -283,15 +356,26 @@ export class Terrain {
       const source = this.elevationSource(tile.z, tile.x, tile.y)
       if (!source) throw new Error(`no elevation for ${tile.z}/${tile.x}/${tile.y}`)
       const [ez, ex, ey] = source
-      const [elev, bitmap] = await Promise.all([
-        this.elevationTile(ez, ex, ey),
-        fetchBitmap(tileUrl('imagery', tile.z, tile.x, tile.y))
-      ])
+      const gsrc = this.source('landcover', tile.z, tile.x, tile.y, this.maxGroundZoom)
+      if (!gsrc) throw new Error(`no ground map for ${tile.z}/${tile.x}/${tile.y}`)
+      const [gz, gx, gy] = gsrc
+      const cls = this.classTexture(gz, gx, gy)
+      let classMap, elev, roadMap
+      try {
+        ;[elev, classMap, roadMap] = await Promise.all([this.elevationTile(ez, ex, ey), cls.promise, this.roadTexture(tile)])
+      } catch (err) {
+        this.releaseClassTexture(cls.key)
+        throw err
+      }
       if (tile.state !== 'loading') {
-        bitmap.close()
+        this.releaseClassTexture(cls.key)
+        roadMap?.dispose()
         return
       }
-      this.buildMesh(tile, elev, ez, ex, ey, bitmap)
+      // Where this tile sits inside its (possibly coarser) ground-type map.
+      const scale = 2 ** -(tile.z - gz)
+      const classXform = new Vector4(tile.x * scale - gx, tile.y * scale - gy, scale, scale)
+      this.buildMesh(tile, elev, ez, ex, ey, { classMap, classKey: cls.key, classXform, roadMap })
       tile.state = 'ready'
       this.loadedCount++
     } catch (err) {
@@ -304,7 +388,7 @@ export class Terrain {
     }
   }
 
-  buildMesh(tile, elev, ez, ex, ey, bitmap) {
+  buildMesh(tile, elev, ez, ex, ey, ground) {
     const scale = 2 ** (tile.z - ez)
     const heights = new Float32Array(GRID * GRID)
     const pos = new Float32Array(VERTEX_COUNT * 3)
@@ -348,16 +432,8 @@ export class Terrain {
     geometry.computeVertexNormals()
     geometry.computeBoundingSphere()
 
-    const texture = new Texture(bitmap)
-    texture.flipY = false
-    texture.colorSpace = SRGBColorSpace
-    texture.wrapS = texture.wrapT = ClampToEdgeWrapping
-    texture.minFilter = LinearMipmapLinearFilter
-    texture.magFilter = LinearFilter
-    texture.anisotropy = this.anisotropy
-    texture.needsUpdate = true
-
-    const mesh = new Mesh(geometry, new MeshBasicMaterial({ map: texture }))
+    const mesh = new Mesh(geometry, groundMaterial(ground))
+    mesh.userData.classKey = ground.classKey
     mesh.name = `tile ${tile.z}/${tile.x}/${tile.y}`
     mesh.visible = false
     mesh.matrixAutoUpdate = false
@@ -373,8 +449,8 @@ export class Terrain {
     if (tile.mesh) {
       this.group.remove(tile.mesh)
       tile.mesh.geometry.dispose()
-      tile.mesh.material.map.source.data?.close?.()
-      tile.mesh.material.map.dispose()
+      this.releaseClassTexture(tile.mesh.userData.classKey)
+      if (tile.mesh.material.uniforms.hasRoads.value) tile.mesh.material.uniforms.roadMap.value.dispose()
       tile.mesh.material.dispose()
       tile.mesh = null
       this.loadedCount--
@@ -389,11 +465,15 @@ export class Terrain {
   }
 
   wantsSplit(tile) {
-    if (tile.z >= this.maxImageryZoom || tile.noSplit) return false
+    if (tile.z >= this.maxZoom || tile.noSplit) return false
+    // Children need a ground map at their own zoom, or (past the maps' deepest
+    // zoom) must lie inside the deepest-zoom area.
     const z = tile.z + 1
+    const gz = Math.min(z, this.maxGroundZoom)
+    const shift = z - gz
     const x = tile.x * 2
     const y = tile.y * 2
-    if (!(this.has('imagery', z, x, y) && this.has('imagery', z, x + 1, y + 1))) return false
+    if (!(this.has('landcover', gz, x >> shift, y >> shift) && this.has('landcover', gz, (x + 1) >> shift, (y + 1) >> shift))) return false
     const d = Math.max(this.camPos.distanceTo(tile.sphere.center) - tile.sphere.radius, 1)
     const texel = tile.widthMeters / 256
     return (texel * this.screenScale) / d > this.sseThreshold

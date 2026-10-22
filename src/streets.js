@@ -7,7 +7,6 @@
 
 import { Vector3 } from 'three'
 
-const BASE = import.meta.env.BASE_URL
 const MAX_LABELS = 45
 const SAME_NAME_SPACING = 240 // px between two labels of the same street
 const FONT = ['600 13px', '600 13px', '600 12px', '600 12px', '500 11.5px', '500 11px']
@@ -29,7 +28,9 @@ const v = new Vector3()
 const w = new Vector3()
 
 export class Streets {
-  constructor(container) {
+  // roads: the RoadTiles loader shared with the ground (roads.js).
+  constructor(container, roads) {
+    this.roads = roads
     this.tiles = new Map() // "i_j" -> tile json, or 'loading' / 'failed'
     this.index = null
     this.loading = 0
@@ -44,16 +45,10 @@ export class Streets {
       this.layer.append(el)
       this.pool.push(el)
     }
-    this.ready = fetch(`${BASE}data/roads/index.json`)
-      .then((r) => r.json())
-      .then((index) => {
-        this.index = index
-        this.attribution = index.attribution
-        this.indexed = new Set(index.tiles.map(([i, j]) => `${i}_${j}`))
-      })
-      .catch((err) => {
-        this.lastError = `roads index: ${err.message}`
-      })
+    this.ready = roads.ready.then(() => {
+      this.index = roads.index
+      this.attribution = roads.index?.attribution
+    })
   }
 
   set visible(on) {
@@ -68,10 +63,7 @@ export class Streets {
     this.tiles.set(key, 'loading')
     this.loading++
     try {
-      const r = await fetch(`${BASE}data/roads/${key}.json`)
-      if (!r.ok) throw new Error(`HTTP ${r.status}`)
-      const t = await r.json()
-      t.short = t.names.map(shortName)
+      const t = await this.roads.get(key)
       if (this.tiles.get(key) === 'loading') this.tiles.set(key, t)
     } catch (err) {
       this.tiles.set(key, 'failed')
@@ -192,7 +184,8 @@ export class Streets {
         const px = (p.x - t.i * t.size) * 10
         const pz = (p.z - t.j * t.size) * 10
         for (const s of t.segs) {
-          for (let k = 2; k < s.length - 2; k += 2) {
+          if (s[0] < 0) continue // unnamed road or path
+          for (let k = 3; k < s.length - 2; k += 2) {
             const x0 = s[k], z0 = s[k + 1], x1 = s[k + 2], z1 = s[k + 3]
             const dx = x1 - x0
             const dz = z1 - z0

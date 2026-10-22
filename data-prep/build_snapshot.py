@@ -1,16 +1,17 @@
 #!/usr/bin/env python3
-"""Bake the imagery and elevation tiles the viewer needs into public/tiles/.
+"""Download the aerial photos and elevation tiles the viewer is built from.
 
 The site then serves everything itself; visitors' browsers make no requests to
 outside tile servers.
 
   Imagery:   USDA NAIP via the USGS National Map image service (public domain),
              exported in large blocks and cut into 256 px Web Mercator tiles,
-             saved as WebP (quality 80).
+             saved as WebP (quality 80) in data-prep/.cache/naip-tiles/. These
+             photos are only an input for build_landcover.py; they are not shipped.
   Elevation: AWS Terrain Tiles (terrarium encoding, USGS 3DEP in the US),
              re-encoded as lossless WebP with heights rounded to 1/8 m.
 
-Which zooms cover which area is set by region.json "snapshot". The script writes
+Which zooms cover which area is set by region.json "snapshot". build_landcover.py then turns the photos into ground-type maps and writes
 public/tiles/coverage.json, which the viewer reads to know which tiles exist.
 Downloads are cached in data-prep/.cache/, and existing tiles are skipped, so
 an interrupted run can simply be restarted.
@@ -81,7 +82,8 @@ def tiers(kind):
 
 
 def tile_path(kind, z, x, y):
-    return os.path.join(OUT, kind, str(z), str(x), f"{y}.webp")
+    root = os.path.join(CACHE_DIR, "naip-tiles") if kind == "imagery" else os.path.join(OUT, kind)
+    return os.path.join(root, str(z), str(x), f"{y}.webp")
 
 
 # --- imagery -----------------------------------------------------------------
@@ -180,17 +182,8 @@ def main():
     t0 = time.time()
     build_elevation()
     build_imagery()
-    coverage = {"imagery": {}, "elevation": {}}
-    for kind in coverage:
-        for z, rng, _ in tiers(kind):
-            coverage[kind][str(z)] = rng
-    coverage["imageryCredit"] = "Imagery: USDA NAIP via USGS The National Map (public domain)"
-    coverage["elevationCredit"] = "Terrain: USGS 3DEP via AWS Terrain Tiles"
-    with open(os.path.join(OUT, "coverage.json"), "w") as f:
-        json.dump(coverage, f, indent=1)
-    size = sum(os.path.getsize(os.path.join(d, f)) for d, _, fs in os.walk(OUT) for f in fs)
-    count = sum(len(fs) for _, _, fs in os.walk(OUT))
-    print(f"done: {count} files, {size / 1e6:.0f} MB in public/tiles ({time.time() - t0:.0f}s)")
+    # public/tiles/coverage.json is written by build_landcover.py, which runs next.
+    print(f"done ({time.time() - t0:.0f}s)")
 
 
 if __name__ == "__main__":
